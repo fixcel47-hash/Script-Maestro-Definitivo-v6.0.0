@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =================================================================================
-# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.3 - CORRECCIÓN DE ERRORES BLOQUEANTES)
+# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.4 - CORRECCIÓN DE SINTAXIS N8N)
 # 🚨 REQUIERE: Las siguientes variables de entorno DEBEN exportarse antes de ejecutar:
 #    export INSTALL_PASSWORD="TU_CONTRASEÑA"
 #    export INSTALL_DOMAIN="TU_DOMINIO.COM"
@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="6.0.3-PUBLIC-MASTER"
+SCRIPT_VERSION="6.0.4-PUBLIC-MASTER"
 
 # Colores y Utilidades
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -161,7 +161,7 @@ initialize_docker_swarm() {
     if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
         run_command "docker swarm init --advertise-addr \$(hostname -I | awk '{print \$1}')" "Inicializando Docker Swarm..."
     else
-        show_message "Docker Swarm ya esta activo"
+        show_warning "Docker Swarm ya esta activo"
     fi
 }
 
@@ -174,7 +174,7 @@ install_server_tools() {
     local config_file="/etc/rkhunter.conf"
     run_command "$SUDO sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && $SUDO sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && $SUDO sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" "Configurando RKHunter..."
     
-    # V6.0.3 CORRECCIÓN: Tolerancia a fallos de RKHunter --update, que fue lo que detuvo el script.
+    # V6.0.3 CORRECCIÓN: Tolerancia a fallos de RKHunter --update.
     if ! run_command "rkhunter --update" "Actualizando RKHunter..."; then
         show_warning "La actualizacion de RKHunter fallo. Se continua la instalacion."
     fi
@@ -335,12 +335,16 @@ install_docker_tool() {
     if ! download_file "$stack_url" "$stack_file"; then exit 1; fi
     sanitize_yaml "$stack_file" "$deploy_file"; register_temp_file "$deploy_file"
     
-    # Reemplazo de variables
-    sed -i "s|<REPLACE_ME>|$COMMON_PASSWORD|g" "$deploy_file"
-    sed -i "s|REPLACE_PASSWORD|$COMMON_PASSWORD|g" "$deploy_file"
+    # V6.0.4 CORRECCIÓN: Sustitución de valores sensibles usando comillas simples 
+    # para evitar errores de sintaxis YAML (como el error 'must be a string' en n8n).
+    perl -pi -e "s|<REPLACE_ME>|'$COMMON_PASSWORD'|g" "$deploy_file"
+    perl -pi -e "s|REPLACE_PASSWORD|'$COMMON_PASSWORD'|g" "$deploy_file"
+    perl -pi -e "s|REPLACE_SECRET_KEY|'$SECRET_KEY'|g" "$deploy_file"
+    
+    # Sustitución de dominio (no necesita comillas, ya debe estar en el stack)
     sed -i "s|REPLACE_SUBDOMAIN|$SUBDOMAIN|g" "$deploy_file"
     sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$deploy_file"
-    sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$deploy_file"
+
 
     create_volume_directories "$deploy_file" "$tool_name"
     
@@ -378,6 +382,11 @@ main() {
     SECRET_KEY="${INSTALL_SECRET_KEY:-$(generate_random_key)}" # Genera si no se proporciona
 
     show_message "Configuracion (ENV VARS): Contraseña: ***, Dominio: $BASE_DOMAIN, Clave Secreta: $SECRET_KEY"
+
+    # Intentar limpiar la instalación fallida de n8n antes de continuar
+    show_message "Limpiando instalación fallida de n8n para reintentar..."
+    docker stack rm n8n >/dev/null 2>&1 || true
+    rm -rf "$DOCKER_DIR/n8n"
 
     run_command "mkdir -p \"$DOCKER_DIR\"" "Creando directorio principal..."
     cd "$DOCKER_DIR" || exit 1

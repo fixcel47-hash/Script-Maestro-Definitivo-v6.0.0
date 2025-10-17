@@ -1,23 +1,19 @@
 # =================================================================================
-# BLOQUE DE INSTALACIÓN MAESTRO (v6.0.0 - Flujo Autónomo Optimizado)
-# Totalmente no interactivo. Configura las variables de entorno para ejecutar.
+# BLOQUE DE INSTALACIÓN MAESTRO (v6.0.0 - FLUIDO Y LIMPIO)
+# Usa este bloque para evitar el error de sintaxis del repositorio.
 # =================================================================================
 
 # 1. DEFINE AQUÍ TUS CREDENCIALES
-# Tomadas de tu archivo .env.global
 export INSTALL_PASSWORD="Adel14881599"
 export INSTALL_DOMAIN="queennovedad.shop"
 export INSTALL_SECRET_KEY="wKStf8R8fAt7W78olV8D8kU5rdiqr31O" 
-# Nota: Si INSTALL_SECRET_KEY no se define, el script generará una automáticamente.
 
-# 2. Guardar el código final del script maestro mejorado
+# 2. Guardar el código final del script maestro mejorado (código sin error de caracter)
 cat > unified_installer_master_v6.sh <<'EOF'
 #!/usr/bin/env bash
 # =================================================================================
 # UNIFIED INSTALLER SCRIPT (v6.0.0 - MAESTRO FINAL NO INTERACTIVO)
 # - Lee configuracion solo de variables de entorno.
-# - Logica de ejecucion simplificada y transparente (sin spinner).
-# - Inicializacion de Chatwoot robusta y probada.
 # =================================================================================
 
 set -euo pipefail
@@ -189,7 +185,7 @@ install_server_tools() {
     run_command "apt-get install -y fail2ban && systemctl enable fail2ban && systemctl start fail2ban" "Instalando y activando Fail2Ban..."
     run_command "apt-get install -y rkhunter" "Instalando RKHunter..."
     local config_file="/etc/rkhunter.conf"
-    run_command "$SUDO sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && $SUDO sed-i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && $SUDO sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" "Configurando RKHunter..."
+    run_command "$SUDO sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && $SUDO sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && $SUDO sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" "Configurando RKHunter..."
     run_command "rkhunter --update" "Actualizando RKHunter..."
     run_command "rkhunter --propupd" "Actualizando base de datos de propiedades de RKHunter..."
     run_command "apt-get install -y chkrootkit" "Instalando CHKRootkit..."
@@ -418,7 +414,7 @@ EOL
         fi
     done
 
-    # Resumen y Finalización (Confirmado en log de usuario)
+    # Resumen y Finalización
     echo ""
     show_success "¡Instalacion completada! Accede a tus servicios:"
     

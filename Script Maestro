@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v9.1.0 - SOLUCIÓN PARA ERROR YAML)
-# Se divide el comando de inicialización de Chatwoot en 'db:create' y 'db:migrate'.
+# INSTALADOR AUTÓNOMO FINAL (v9.2.0 - SOLUCIÓN PARA ERROR YAML INTERNO DE CHATWOOT)
+# Se sobrescribe el archivo database.yml defectuoso de la imagen de Chatwoot.
 # =================================================================================
 
 # ------------------------------
@@ -46,6 +46,7 @@ substitute_and_deploy_chatwoot() {
 
     show_info "Re-desplegando stack: $tool_name"
     
+    # Crear directorios si es necesario
     execute "mkdir -p \"$tool_dir\""
     execute "mkdir -p \"$tool_dir/chatwoot_storage\""
 
@@ -66,7 +67,7 @@ substitute_and_deploy_chatwoot() {
 }
 
 # ------------------------------
-# 3. Función de Inicialización de Chatwoot (FIX V9.1.0)
+# 3. Función de Inicialización de Chatwoot (FIX V9.2.0 - Overwrite YAML)
 # ------------------------------
 initialize_chatwoot_db() {
     show_info "Iniciando proceso de inicialización de la base de datos de Chatwoot..."
@@ -84,29 +85,35 @@ initialize_chatwoot_db() {
         show_error "No se encontró ningún contenedor corriendo para el servicio $service_name."
     fi
 
-    show_info "Contenedor ID encontrado: $container_id. Ejecutando comando de configuración de DB (Bypass YAML)..."
+    show_info "Contenedor ID encontrado: $container_id. Aplicando FIX de YAML e inicializando DB..."
     
-    # ----------------------------------------------------
-    # FIX: Ejecutar CREATE y MIGRATE por separado
-    # Esto evita el comando db:chatwoot_setup que lee el database.yml defectuoso
-    # ----------------------------------------------------
+    # FIX V9.2.0: Escribir un database.yml válido para sobreescribir el defectuoso
+    # Este YAML lee las variables de entorno que ya pasamos en el docker stack.
+    local yaml_content="production:\n  adapter: postgresql\n  encoding: unicode\n  pool: <%= ENV.fetch(\"RAILS_MAX_THREADS\") { 5 } %>\n  host: <%= ENV.fetch(\"POSTGRES_HOST\") %>\n  port: <%= ENV.fetch(\"POSTGRES_PORT\") { 5432 } %>\n  database: <%= ENV.fetch(\"POSTGRES_DATABASE\") %>\n  username: <%= ENV.fetch(\"POSTGRES_USER\") %>\n  password: <%= ENV.fetch(\"POSTGRES_PASSWORD\") %>"
+    
+    show_info "1/4: Sobreescribiendo /app/config/database.yml con una configuración mínima válida..."
+    # Inyectamos la configuración YAML usando printf y /bin/sh
+    if ! docker exec "$container_id" /bin/sh -c "printf \"$yaml_content\" > /app/config/database.yml"; then
+        show_error "El paso de sobrescritura de database.yml falló."
+    fi
+    show_success "database.yml sobreescrito con éxito."
 
-    # Comando 1: db:create (Crea la base de datos, no debería necesitar el database.yml completo)
-    show_info "1/3: Ejecutando db:create..."
+    # Comando 2: db:create (Crea la base de datos)
+    show_info "2/4: Ejecutando db:create..."
     if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "bundle exec rails db:create"; then
         show_error "db:create falló. No se pudo crear la base de datos."
     fi
     show_success "db:create completado."
 
-    # Comando 2: db:migrate (Aplica las migraciones)
-    show_info "2/3: Ejecutando db:migrate..."
+    # Comando 3: db:migrate (Aplica las migraciones)
+    show_info "3/4: Ejecutando db:migrate..."
     if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "bundle exec rails db:migrate"; then
         show_error "db:migrate falló. No se pudieron aplicar las migraciones."
     fi
     show_success "db:migrate completado."
 
-    # Comando 3: db:seed (Carga los datos iniciales, usuarios, etc.)
-    show_info "3/3: Ejecutando db:seed..."
+    # Comando 4: db:seed (Carga los datos iniciales, usuarios, etc.)
+    show_info "4/4: Ejecutando db:seed..."
     if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "bundle exec rails db:seed"; then
         show_error "db:seed falló. No se pudo cargar la configuración inicial."
     fi
@@ -131,4 +138,4 @@ show_success "¡Instalación de Chatwoot COMPLETADA! 🎉"
 echo ""
 echo "Accede a Chatwoot en: https://chat.$BASE_DOMAIN"
 echo "Contraseña de base de datos/Redis: $COMMON_PASSWORD"
-echo "Si la aplicación no carga después de unos minutos, puede ser un problema temporal con la imagen de Chatwoot."
+echo ""

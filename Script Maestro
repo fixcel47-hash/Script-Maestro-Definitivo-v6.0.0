@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v9.5.0 - FIX DE NOMBRE DE VARIABLE EN CHATWOOT)
-# Se cambia POSTGRES_USER por POSTGRES_USERNAME en la inyección de YAML.
+# INSTALADOR AUTÓNOMO FINAL (v9.5.0 - FIX COMPLETO DE CHATWOOT)
+# - Solución de inyección directa para errores de YAML.
+# - Corrección de la variable POSTGRES_USER a POSTGRES_USERNAME.
 # =================================================================================
 
 # ------------------------------
@@ -61,14 +62,12 @@ substitute_and_deploy_chatwoot() {
     show_success "Variables de Chatwoot sustituidas."
 
     show_info "Desplegando Chatwoot en Docker Swarm..."
-    # Antes de desplegar, nos aseguramos de que el stack use POSTGRES_USERNAME y no POSTGRES_USER 
-    # (Si el stack original usa POSTGRES_USER, esto se ajusta en el .yml descargado si es necesario)
     execute "docker stack deploy -c \"$deploy_file\" \"$tool_name\""
     show_success "Chatwoot instalado correctamente."
 }
 
 # ------------------------------
-# 3. Función de Inicialización de Chatwoot (FIX V9.5.0 - Corregir Variable)
+# 3. Función de Inicialización de Chatwoot (FIX V9.5.0 - Corregir Variable y YAML)
 # ------------------------------
 initialize_chatwoot_db() {
     show_info "Iniciando proceso de inicialización de la base de datos de Chatwoot..."
@@ -88,9 +87,10 @@ initialize_chatwoot_db() {
 
     show_info "Contenedor ID encontrado: $container_id. Corrigiendo variable y ejecutando inicialización..."
     
-    show_info "1/4: Sobreescribiendo /app/config/database.yml con POSTGRES_USERNAME..."
+    show_info "1/4: Sobreescribiendo /app/config/database.yml con POSTGRES_USERNAME (Inyección Directa)..."
 
-    # FIX V9.5.0: Inyección Directa con la variable correcta: POSTGRES_USERNAME
+    # FIX V9.5.0: Usar Here-Document literal y canalizar su contenido directamente.
+    # Se usa POSTGRES_USERNAME para evitar el KeyError.
     if ! docker exec -i "$container_id" /bin/sh -c "cat > /app/config/database.yml" <<'YAML_CONTENT_LITERAL' ; then
 production:
   adapter: postgresql
@@ -99,17 +99,15 @@ production:
   host: <%= ENV.fetch("POSTGRES_HOST") %>
   port: <%= ENV.fetch("POSTGRES_PORT") { 5432 } %>
   database: <%= ENV.fetch("POSTGRES_DATABASE") %>
-  username: <%= ENV.fetch("POSTGRES_USERNAME") %> # <--- ¡Cambiado a POSTGRES_USERNAME!
+  username: <%= ENV.fetch("POSTGRES_USERNAME") %> 
   password: <%= ENV.fetch("POSTGRES_PASSWORD") %>
 YAML_CONTENT_LITERAL
-        show_error "El paso de sobrescritura de database.yml falló. No se pudo inyectar la corrección de la variable."
+        show_error "El paso de sobrescritura de database.yml falló."
     fi
     show_success "database.yml sobreescrito con éxito."
 
     # Comando 2: db:create (Crea la base de datos)
     show_info "2/4: Ejecutando db:create..."
-    # Nota: Si el stack original usaba POSTGRES_USER, esto fallará aquí, pero asumiremos que el stack está configurado
-    # para usar POSTGRES_USERNAME o que el archivo yaml original lo corregía.
     if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "bundle exec rails db:create"; then
         show_error "db:create falló. No se pudo crear la base de datos."
     fi

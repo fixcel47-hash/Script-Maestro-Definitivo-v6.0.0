@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v9.3.0 - SOLUCIÓN PARA ERROR DE ESCAPE DE SHELL EN YAML)
-# Se utiliza un Here-Doc anidado para pasar el bloque de configuración YAML.
+# INSTALADOR AUTÓNOMO FINAL (v9.4.0 - FIX DE INYECCIÓN DIRECTA Y LITERAL)
+# Se utiliza un Here-Doc literal canalizado directamente a 'docker exec'
+# para solucionar problemas de escape de shell.
 # =================================================================================
 
 # ------------------------------
@@ -35,7 +36,7 @@ show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 execute() { local cmd="$1"; show_info "-> Ejecutando: $cmd"; eval "$cmd"; local code=$?; if [ $code -ne 0 ]; then show_error "Comando falló con código $code: $cmd"; fi; }
 
-# Función de Despliegue de Chatwoot (solo para reejecución)
+# Función de Despliegue de Chatwoot 
 substitute_and_deploy_chatwoot() {
     local tool_name="chatwoot"
     local subdomain="${SUBDOMAINS[$tool_name]}"
@@ -66,7 +67,7 @@ substitute_and_deploy_chatwoot() {
 }
 
 # ------------------------------
-# 3. Función de Inicialización de Chatwoot (FIX V9.3.0 - Here-Doc Anidado)
+# 3. Función de Inicialización de Chatwoot (FIX V9.4.0 - Inyección Directa)
 # ------------------------------
 initialize_chatwoot_db() {
     show_info "Iniciando proceso de inicialización de la base de datos de Chatwoot..."
@@ -86,13 +87,11 @@ initialize_chatwoot_db() {
 
     show_info "Contenedor ID encontrado: $container_id. Aplicando FIX de YAML e inicializando DB..."
     
-    # ----------------------------------------------------
-    # FIX V9.3.0: USAR UN HERE-DOC ANIDADO
-    # Define el comando completo de parcheo con el contenido YAML.
-    # El uso de 'EOF_CMD' y 'YAML_CONTENT_EOF' garantiza que el shell externo no interprete nada.
-    # ----------------------------------------------------
-    local db_patch_command=$(cat <<'EOF_CMD'
-cat <<'YAML_CONTENT_EOF' > /app/config/database.yml
+    show_info "1/4: Sobreescribiendo /app/config/database.yml con una configuración mínima válida (Inyección Directa)..."
+
+    # FIX V9.4.0: Usar un Here-Document literal y canalizar su contenido directamente a docker exec.
+    # Usamos '-i' en docker exec para adjuntar STDIN del host.
+    if ! docker exec -i "$container_id" /bin/sh -c "cat > /app/config/database.yml" <<'YAML_CONTENT_LITERAL' ; then
 production:
   adapter: postgresql
   encoding: unicode
@@ -102,15 +101,8 @@ production:
   database: <%= ENV.fetch("POSTGRES_DATABASE") %>
   username: <%= ENV.fetch("POSTGRES_USER") %>
   password: <%= ENV.fetch("POSTGRES_PASSWORD") %>
-YAML_CONTENT_EOF
-EOF_CMD
-)
-
-    show_info "1/4: Sobreescribiendo /app/config/database.yml con una configuración mínima válida (Usando Here-Doc Anidado)..."
-    
-    # Ejecutar el comando completo (el Here-Doc) dentro del contenedor
-    if ! docker exec "$container_id" /bin/sh -c "$db_patch_command"; then
-        show_error "El paso de sobrescritura de database.yml falló. (Error de shell/escape, la imagen de Chatwoot tiene un problema fundamental)."
+YAML_CONTENT_LITERAL
+        show_error "El paso de sobrescritura de database.yml falló. Se ha intentado la corrección de shell más avanzada. Es probable que el problema sea un bug irresoluble de la imagen de Chatwoot."
     fi
     show_success "database.yml sobreescrito con éxito."
 
@@ -143,8 +135,10 @@ EOF_CMD
 # 4. Lógica Principal
 # ------------------------------
 
-substitute_and_deploy_chatwoot
-initialize_chatwoot_db
+# 1. Despliega el stack de Chatwoot
+substitute_and_deploy_chatwoot 
+# 2. Inicializa la base de datos con el parche
+initialize_chatwoot_db 
 
 # ------------------------------
 # 5. Resultados Finales

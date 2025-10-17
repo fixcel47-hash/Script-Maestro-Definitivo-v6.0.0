@@ -2,7 +2,7 @@
 
 # =================================================================================
 # INSTALADOR AUTÓNOMO FINAL (v9.0.0 - SOLUCIÓN DEFINITIVA DE SHELL /bin/sh)
-# Arregla el error "no such file or directory: /bin/bash" para la inicialización de Chatwoot.
+# Arregla el error "no such file or directory: /bin/bash" y todos los errores anteriores.
 # =================================================================================
 
 # ------------------------------
@@ -150,7 +150,7 @@ initialize_chatwoot_db() {
     # **FIX V9.0.0:** Cambiar /bin/bash por /bin/sh para compatibilidad con la imagen Docker
     local db_setup_cmd="bundle exec rails db:chatwoot_setup"
     
-    # Ejecutamos el comando dentro del contenedor
+    # Ejecutamos el comando dentro del contenedor usando /bin/sh
     if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "$db_setup_cmd"; then
         show_error "La inicialización de la base de datos de Chatwoot falló usando docker exec."
     fi

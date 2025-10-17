@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v9.0.0 - LA VERSIÓN FINAL CORREGIDA)
-# Soluciona: 1. Error docker compose, 2. Error network attach, 3. Error /bin/bash.
-# El error YAML actual no es modificable desde el script, se confía en que las variables
-# de entorno pasadas al docker stack lo resuelvan durante la ejecución.
+# INSTALADOR AUTÓNOMO FINAL (v9.1.0 - SOLUCIÓN PARA ERROR YAML)
+# Se divide el comando de inicialización de Chatwoot en 'db:create' y 'db:migrate'.
 # =================================================================================
 
 # ------------------------------
-# 1. Configuración de Variables y Estilos
+# 1. Configuración de Variables
 # ------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -21,24 +19,13 @@ COMMON_PASSWORD="Adel14881599"
 SECRET_KEY="wKStf8R8fAt7W78olV8D8kU5rdiqr31O"
 BASE_DOMAIN="queennovedad.shop"
 
-# Definición de herramientas y subdominios
-declare -a ALL_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
-declare -gA SUBDOMAINS=(
-    [traefik]="proxy" [portainer]="admin" [redis]="redis" [postgres]="postgres" 
-    [n8n]="n8" [evoapi]="evoapi" [chatwoot]="chat"
-)
-
-# URLs de descarga de tus plantillas de GitHub
+# Definición de URLs (solo Chatwoot es relevante ahora)
 declare -gA STACK_URLS=(
-    [traefik]="https://github.com/user-attachments/files/22956506/traefik-stack.yml"
-    [portainer]="https://github.com/user-attachments/files/22956492/portainer-stack.yml"
-    [redis]="https://github.com/user-attachments/files/22956503/redis-stack.yml"
-    [postgres]="https://github.com/user-attachments/files/22956495/postgres-stack.yml"
-    [n8n]="https://github.com/user-attachments/files/22956487/n8n-stack.yml"
-    [evoapi]="https://github.com/user-attachments/files/22956481/evoapi-stack.yml"
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
 )
-
+declare -gA SUBDOMAINS=(
+    [chatwoot]="chat"
+)
 
 # ------------------------------
 # 2. Funciones Auxiliares
@@ -48,16 +35,9 @@ show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 execute() { local cmd="$1"; show_info "-> Ejecutando: $cmd"; eval "$cmd"; local code=$?; if [ $code -ne 0 ]; then show_error "Comando falló con código $code: $cmd"; fi; }
 
-# Función de instalación de dependencias y Docker (Omitting full execution for brevity in this final step)
-install_dependencies() {
-    show_info "Omitiendo instalación de dependencias (se asume completada)."
-}
-
-# ------------------------------
-# 3. Función de Despliegue y Sustitución Segura (Simplificado para reejecución)
-# ------------------------------
-substitute_and_deploy_tool() {
-    local tool_name="$1"
+# Función de Despliegue de Chatwoot (solo para reejecución)
+substitute_and_deploy_chatwoot() {
+    local tool_name="chatwoot"
     local subdomain="${SUBDOMAINS[$tool_name]}"
     local stack_url="${STACK_URLS[$tool_name]}"
     local tool_dir="$DOCKER_DIR/$tool_name"
@@ -65,88 +45,90 @@ substitute_and_deploy_tool() {
     local deploy_file="$tool_dir/$tool_name-deploy.yml"
 
     show_info "Re-desplegando stack: $tool_name"
-
-    # 1. Crear directorios base (por si fueron eliminados)
+    
     execute "mkdir -p \"$tool_dir\""
-    if [ "$tool_name" = "chatwoot" ]; then
-        execute "mkdir -p \"$tool_dir/chatwoot_storage\""
-    fi
+    execute "mkdir -p \"$tool_dir/chatwoot_storage\""
 
-    # 2. Descargar y preparar plantilla (asumiendo que ya están en /home/docker)
-    # Volver a descargar y sustituir es la forma más segura de reintentar
-    show_info "Descargando y sustituyendo plantilla para $tool_name..."
+    show_info "Descargando y sustituyendo plantilla para Chatwoot..."
     if ! curl -fsSL "$stack_url" -o "$stack_file"; then
-        show_error "No se pudo descargar la plantilla de $tool_name."
+        show_error "No se pudo descargar la plantilla de Chatwoot."
     fi
     execute "cp \"$stack_file\" \"$deploy_file\""
     execute "sed -i 's#REPLACE_PASSWORD#\"$COMMON_PASSWORD\"#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_SECRET_KEY#\"$SECRET_KEY\"#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_SUBDOMAIN#$subdomain#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_DOMAIN#$BASE_DOMAIN#g' \"$deploy_file\""
-    show_success "Variables de $tool_name sustituidas."
+    show_success "Variables de Chatwoot sustituidas."
 
-    # 3. Desplegar el stack
-    show_info "Desplegando $tool_name en Docker Swarm..."
+    show_info "Desplegando Chatwoot en Docker Swarm..."
     execute "docker stack deploy -c \"$deploy_file\" \"$tool_name\""
-    show_success "$tool_name instalado correctamente."
-
-    if [ "$tool_name" = "postgres" ] || [ "$tool_name" = "redis" ]; then
-        show_info "Esperando 15 segundos para estabilización de la BBDD..."
-        sleep 15
-    fi
+    show_success "Chatwoot instalado correctamente."
 }
 
 # ------------------------------
-# 4. Función de Inicialización de Chatwoot (FIX FINAL /bin/sh)
+# 3. Función de Inicialización de Chatwoot (FIX V9.1.0)
 # ------------------------------
 initialize_chatwoot_db() {
     show_info "Iniciando proceso de inicialización de la base de datos de Chatwoot..."
     
     local service_name="chatwoot_rails"
 
-    # **ESPERA CRÍTICA:** Espera para asegurar que el contenedor esté corriendo y la DB lista.
     show_info "Esperando 45 segundos para asegurar que el contenedor de Rails esté corriendo y PostgreSQL esté listo..."
     sleep 45
 
-    # 1. Obtener el ID del contenedor del servicio 'chatwoot_rails'
     show_info "Buscando ID del contenedor en ejecución para el servicio $service_name..."
     local container_id
     container_id=$(docker ps -q --filter name=${service_name} --format "{{.ID}}" | head -n 1)
 
     if [ -z "$container_id" ]; then
-        show_error "No se encontró ningún contenedor corriendo para el servicio $service_name. El despliegue de Chatwoot puede haber fallado."
+        show_error "No se encontró ningún contenedor corriendo para el servicio $service_name."
     fi
 
-    show_info "Contenedor ID encontrado: $container_id. Ejecutando comando de configuración de DB..."
+    show_info "Contenedor ID encontrado: $container_id. Ejecutando comando de configuración de DB (Bypass YAML)..."
+    
+    # ----------------------------------------------------
+    # FIX: Ejecutar CREATE y MIGRATE por separado
+    # Esto evita el comando db:chatwoot_setup que lee el database.yml defectuoso
+    # ----------------------------------------------------
 
-    # **COMANDO FINAL CORRECTO:** Usamos /bin/sh y RAILS_ENV
-    local db_setup_cmd="bundle exec rails db:chatwoot_setup"
-    
-    # Ejecutamos el comando dentro del contenedor usando /bin/sh
-    # Si falla por YAML, es un problema de la imagen base de Chatwoot que la comunidad debe resolver, pero este es el comando oficial.
-    if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "$db_setup_cmd"; then
-        show_error "La inicialización de la base de datos de Chatwoot falló. Verifique si la imagen de Chatwoot tiene un error de YAML en su database.yml. Este es el comando final correcto."
+    # Comando 1: db:create (Crea la base de datos, no debería necesitar el database.yml completo)
+    show_info "1/3: Ejecutando db:create..."
+    if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "bundle exec rails db:create"; then
+        show_error "db:create falló. No se pudo crear la base de datos."
     fi
+    show_success "db:create completado."
+
+    # Comando 2: db:migrate (Aplica las migraciones)
+    show_info "2/3: Ejecutando db:migrate..."
+    if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "bundle exec rails db:migrate"; then
+        show_error "db:migrate falló. No se pudieron aplicar las migraciones."
+    fi
+    show_success "db:migrate completado."
+
+    # Comando 3: db:seed (Carga los datos iniciales, usuarios, etc.)
+    show_info "3/3: Ejecutando db:seed..."
+    if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "bundle exec rails db:seed"; then
+        show_error "db:seed falló. No se pudo cargar la configuración inicial."
+    fi
+    show_success "db:seed completado."
     
-    show_success "Inicialización de base de datos completada exitosamente."
+    show_success "Inicialización de base de datos completada exitosamente. Chatwoot debería estar listo."
 }
 
 
 # ------------------------------
-# 5. Lógica Principal - Reejecución
+# 4. Lógica Principal
 # ------------------------------
 
-# Solo desplegamos Chatwoot, asumiendo que el resto ya está funcionando
-show_info "Iniciando re-despliegue solo de Chatwoot..."
-substitute_and_deploy_tool "chatwoot"
+substitute_and_deploy_chatwoot
 initialize_chatwoot_db
 
 # ------------------------------
-# 6. Resultados Finales
+# 5. Resultados Finales
 # ------------------------------
 
-show_success "¡Instalación de Chatwoot completada! 🎉"
+show_success "¡Instalación de Chatwoot COMPLETADA! 🎉"
 echo ""
-echo "Accede a Chatwoot en: https://${SUBDOMAINS[chatwoot]}.$BASE_DOMAIN"
-echo "Contraseña común: $COMMON_PASSWORD"
-echo ""
+echo "Accede a Chatwoot en: https://chat.$BASE_DOMAIN"
+echo "Contraseña de base de datos/Redis: $COMMON_PASSWORD"
+echo "Si la aplicación no carga después de unos minutos, puede ser un problema temporal con la imagen de Chatwoot."

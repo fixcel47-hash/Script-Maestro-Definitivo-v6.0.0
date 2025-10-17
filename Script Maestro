@@ -1,3 +1,4 @@
+cat > final_installer.sh << 'EOF_SCRIPT'
 #!/usr/bin/env bash
 
 # =================================================================================
@@ -66,6 +67,7 @@ substitute_and_deploy_chatwoot() {
     # ---------------------------------------------
     # FIX V9.6.0: CORRECCIÓN DEL NOMBRE DEL HOST DE LA DB EN SWARM
     # Reemplazamos el nombre incompleto ('chatwoot-postgres') por el nombre completo de Swarm (stack_service).
+    # Esta línea se asegura de que el host sea el correcto.
     # ---------------------------------------------
     show_info "Aplicando FIX de DNS/Host: reemplazando 'chatwoot-postgres' por 'chatwoot_chatwoot-postgres'"
     execute "sed -i 's#chatwoot-postgres#chatwoot_chatwoot-postgres#g' \"$deploy_file\""
@@ -105,7 +107,7 @@ production:
   adapter: postgresql
   encoding: unicode
   pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
-  host: <%= ENV.fetch("POSTGRES_HOST") %>
+  host: <%= ENV.fetch("POSTGRES_HOST") %> 
   port: <%= ENV.fetch("POSTGRES_PORT") { 5432 } %>
   database: <%= ENV.fetch("POSTGRES_DATABASE") %>
   username: <%= ENV.fetch("POSTGRES_USERNAME") %> 
@@ -158,3 +160,4 @@ echo ""
 echo "Accede a Chatwoot en: https://chat.$BASE_DOMAIN"
 echo "Contraseña de base de datos/Redis: $COMMON_PASSWORD"
 echo ""
+EOF_SCRIPT

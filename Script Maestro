@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =================================================================================
-# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.1 - AUTÓNOMO SIN CREDENCIALES)
+# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.2 - CORRECCIÓN DE BASH PIPES)
 # 🚨 REQUIERE: Las siguientes variables de entorno DEBEN exportarse antes de ejecutar:
 #    export INSTALL_PASSWORD="TU_CONTRASEÑA"
 #    export INSTALL_DOMAIN="TU_DOMINIO.COM"
@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="6.0.1-PUBLIC-MASTER"
+SCRIPT_VERSION="6.0.2-PUBLIC-MASTER"
 
 # Colores y Utilidades
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -64,7 +64,8 @@ run_command() {
     
     echo -e "  -> Ejecutando: \033[0;33m$full_cmd\033[0m"
 
-    if $full_cmd; then
+    # CORRECCIÓN V6.0.2: Usamos 'eval' para interpretar correctamente pipes y redirecciones.
+    if eval "$full_cmd"; then 
         show_success "Completado: $msg"
         return 0
     else
@@ -132,7 +133,8 @@ install_dependencies() {
         
         show_message "Instalando Docker..."
         $SUDO install -m 0755 -d /etc/apt/keyrings
-        run_command "curl -fsSL https://download.docker.com/linux/$OS_DETECTED/gpg | $SUDO gpg --dearmor -o /etc/apt/keyrings/docker.gpg" "Descargando clave GPG de Docker..."
+        # ESTE COMANDO CONTIENE EL PIPE Y AHORA DEBERÍA FUNCIONAR GRACIAS A 'EVAL'
+        run_command "curl -fsSL https://download.docker.com/linux/$OS_DETECTED/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg" "Descargando clave GPG de Docker..."
         echo \
 "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$OS_DETECTED \
 $(lsb_release -cs) stable" | $SUDO tee /etc/apt/sources.list.d/docker.list > /dev/null
@@ -226,7 +228,7 @@ create_volume_directories() {
     for path in $volume_paths; do run_command "mkdir -p \"$path\"" "Creando directorio $path..."; done
 }
 
-# Lógica de Chatwoot (Verificada y Corregida - Evita error de sintaxis en línea 249)
+# Lógica de Chatwoot 
 initialize_chatwoot_database() {
     local tool_name="chatwoot"
     local subdomain=$1
@@ -246,7 +248,7 @@ initialize_chatwoot_database() {
         sleep 5; attempt=$((attempt + 1));
         container_id=$(docker ps --filter "name=redis_redis" --format "{{.ID}}" | head -n 1)
     done
-    if [ "$redis_ready" = false ]; then show_error "Redis no está disponible"; return 1; fi # Corregido: 'fi' en lugar de '}'
+    if [ "$redis_ready" = false ]; then show_error "Redis no está disponible"; return 1; fi 
     
     # 2. Crear y desplegar stack temporal para inicialización
     local init_stack_file="/tmp/chatwoot-init-stack.yml"

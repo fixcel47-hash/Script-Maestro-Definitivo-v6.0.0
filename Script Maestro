@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v7.0.0 - FIX DE COMPATIBILIDAD DOCKER COMPOSE)
-# Arregla el error "unknown shorthand flag: 'f' in -f"
+# INSTALADOR AUTÓNOMO FINAL (v8.0.0 - FIX DE COMPATIBILIDAD SWARM)
+# SOLUCIÓN DEFINITIVA. Arregla todos los errores anteriores (YAML, Volumen, Red).
 # =================================================================================
 
 # ------------------------------
@@ -44,7 +44,7 @@ declare -gA STACK_URLS=(
 show_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
-execute() { local cmd="$1"; show_info "-> Ejecutando: $cmd"; eval "$cmd"; if [ $? -ne 0 ]; then show_error "Comando falló con código $?: $cmd"; fi; }
+execute() { local cmd="$1"; show_info "-> Ejecutando: $cmd"; eval "$cmd"; local code=$?; if [ $code -ne 0 ]; then show_error "Comando falló con código $code: $cmd"; fi; }
 
 # Función de instalación de dependencias y Docker
 install_dependencies() {
@@ -53,7 +53,8 @@ install_dependencies() {
         show_error "Por favor, ejecuta este script como root o con sudo."
     fi
 
-    show_info "Instalando dependencias (curl, docker, jq)..."
+    show_info "Instalando dependencias (curl, docker, jq, docker-compose)..."
+    # Aseguramos que 'docker-compose' con guion esté instalado (para compatibilidad)
     execute "apt update"
     execute "apt install -y curl docker.io docker-compose jq"
     execute "systemctl start docker"
@@ -84,7 +85,7 @@ substitute_and_deploy_tool() {
     # 1. Crear directorios base
     execute "mkdir -p \"$tool_dir\""
     
-    # **CORRECCIÓN DE VOLUMEN:** Crear el directorio de almacenamiento persistente para Chatwoot.
+    # **FIX DE VOLUMEN:** Crear el directorio de almacenamiento persistente para Chatwoot.
     if [ "$tool_name" = "chatwoot" ]; then
         show_info "Creando directorio de almacenamiento persistente para Chatwoot..."
         execute "mkdir -p \"$tool_dir/chatwoot_storage\""
@@ -101,7 +102,7 @@ substitute_and_deploy_tool() {
     
     show_info "Sustituyendo variables de entorno con sintaxis YAML segura..."
     
-    # Sustituir Contraseña y Clave Secreta, FORZANDO COMILLAS DOBLES (Corrige error YAML)
+    # Sustituir Contraseña y Clave Secreta, FORZANDO COMILLAS DOBLES
     execute "sed -i 's#REPLACE_PASSWORD#\"$COMMON_PASSWORD\"#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_SECRET_KEY#\"$SECRET_KEY\"#g' \"$deploy_file\""
 
@@ -124,22 +125,36 @@ substitute_and_deploy_tool() {
 }
 
 # ------------------------------
-# 4. Función de Inicialización de Chatwoot (FIX DE COMPATIBILIDAD)
+# 4. Función de Inicialización de Chatwoot (FIX FINAL SWARM)
 # ------------------------------
 initialize_chatwoot_db() {
     show_info "Iniciando proceso de inicialización de la base de datos de Chatwoot..."
     
-    local chatwoot_stack="chatwoot"
-    local deploy_file="$DOCKER_DIR/$chatwoot_stack/$chatwoot_stack-deploy.yml"
+    local service_name="chatwoot_rails" # Nombre completo del servicio en Swarm: [stackname]_[servicename]
 
-    # Espera extra para asegurar que PostgreSQL esté completamente listo
-    show_info "Esperando 15 segundos adicionales para asegurar que PostgreSQL esté listo..."
-    sleep 15
+    # **ESPERA CRÍTICA:** Espera para asegurar que el contenedor esté corriendo y la DB lista.
+    show_info "Esperando 45 segundos para asegurar que el contenedor de Rails esté corriendo y PostgreSQL esté listo..."
+    sleep 45
+
+    # 1. Obtener el ID del contenedor del servicio 'chatwoot_rails'
+    show_info "Buscando ID del contenedor en ejecución para el servicio $service_name..."
+    local container_id
+    # Filtramos por el nombre del servicio en Swarm
+    container_id=$(docker ps -q --filter name=${service_name} --format "{{.ID}}" | head -n 1)
+
+    if [ -z "$container_id" ]; then
+        show_error "No se encontró ningún contenedor corriendo para el servicio $service_name. El despliegue de Chatwoot puede haber fallado."
+    fi
+
+    show_info "Contenedor ID encontrado: $container_id. Ejecutando comando de configuración de DB..."
+
+    # **FIX V8.0.0:** Usar 'docker exec' en el contenedor en funcionamiento para evitar el error de red.
+    local db_setup_cmd="bundle exec rails db:chatwoot_setup"
     
-    # **FIX V7.0.0:** Cambiar 'docker compose' por 'docker-compose' para compatibilidad con -f
-    show_info "Ejecutando setup y seed de la base de datos dentro del servicio 'rails'..."
-    
-    execute "docker-compose -f \"$deploy_file\" run --rm rails bundle exec rails db:chatwoot_setup"
+    # Ejecutamos el comando dentro del contenedor (forzando bash y RAILS_ENV)
+    if ! docker exec -e RAILS_ENV=production "$container_id" /bin/bash -c "$db_setup_cmd"; then
+        show_error "La inicialización de la base de datos de Chatwoot falló usando docker exec."
+    fi
     
     show_success "Inicialización de base de datos completada exitosamente."
 }
@@ -156,8 +171,6 @@ for tool_name in "${ALL_TOOLS[@]}"; do
     substitute_and_deploy_tool "$tool_name"
     
     if [ "$tool_name" = "chatwoot" ]; then
-        show_info "Esperando 30 segundos a que el contenedor principal de Chatwoot (rails) inicie..."
-        sleep 30
         initialize_chatwoot_db
     fi
 done

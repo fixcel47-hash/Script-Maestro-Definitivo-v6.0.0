@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v8.0.0 - FIX DE COMPATIBILIDAD SWARM)
-# SOLUCIÓN DEFINITIVA. Arregla todos los errores anteriores (YAML, Volumen, Red).
+# INSTALADOR AUTÓNOMO FINAL (v9.0.0 - SOLUCIÓN DEFINITIVA DE SHELL /bin/sh)
+# Arregla el error "no such file or directory: /bin/bash" para la inicialización de Chatwoot.
 # =================================================================================
 
 # ------------------------------
@@ -54,7 +54,6 @@ install_dependencies() {
     fi
 
     show_info "Instalando dependencias (curl, docker, jq, docker-compose)..."
-    # Aseguramos que 'docker-compose' con guion esté instalado (para compatibilidad)
     execute "apt update"
     execute "apt install -y curl docker.io docker-compose jq"
     execute "systemctl start docker"
@@ -125,7 +124,7 @@ substitute_and_deploy_tool() {
 }
 
 # ------------------------------
-# 4. Función de Inicialización de Chatwoot (FIX FINAL SWARM)
+# 4. Función de Inicialización de Chatwoot (FIX FINAL SWARM /bin/sh)
 # ------------------------------
 initialize_chatwoot_db() {
     show_info "Iniciando proceso de inicialización de la base de datos de Chatwoot..."
@@ -148,11 +147,11 @@ initialize_chatwoot_db() {
 
     show_info "Contenedor ID encontrado: $container_id. Ejecutando comando de configuración de DB..."
 
-    # **FIX V8.0.0:** Usar 'docker exec' en el contenedor en funcionamiento para evitar el error de red.
+    # **FIX V9.0.0:** Cambiar /bin/bash por /bin/sh para compatibilidad con la imagen Docker
     local db_setup_cmd="bundle exec rails db:chatwoot_setup"
     
-    # Ejecutamos el comando dentro del contenedor (forzando bash y RAILS_ENV)
-    if ! docker exec -e RAILS_ENV=production "$container_id" /bin/bash -c "$db_setup_cmd"; then
+    # Ejecutamos el comando dentro del contenedor
+    if ! docker exec -e RAILS_ENV=production "$container_id" /bin/sh -c "$db_setup_cmd"; then
         show_error "La inicialización de la base de datos de Chatwoot falló usando docker exec."
     fi
     

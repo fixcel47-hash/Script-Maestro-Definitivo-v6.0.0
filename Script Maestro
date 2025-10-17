@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v9.5.0 - FIX COMPLETO DE CHATWOOT)
-# - Solución de inyección directa para errores de YAML.
-# - Corrección de la variable POSTGRES_USER a POSTGRES_USERNAME.
+# INSTALADOR AUTÓNOMO FINAL (v9.6.0 - FIX COMPLETO: YAML, VARIABLE y DNS de Swarm)
+# Solución al error "could not translate host name 'chatwoot-postgres'".
 # =================================================================================
 
 # ------------------------------
@@ -45,7 +44,7 @@ substitute_and_deploy_chatwoot() {
     local stack_file="$tool_dir/$tool_name-stack.yml"
     local deploy_file="$tool_dir/$tool_name-deploy.yml"
 
-    show_info "Re-desplegando stack: $tool_name"
+    show_info "Re-desplegando stack: $tool_name (Aplicando FIX de DNS/Host)"
     
     execute "mkdir -p \"$tool_dir\""
     execute "mkdir -p \"$tool_dir/chatwoot_storage\""
@@ -55,11 +54,22 @@ substitute_and_deploy_chatwoot() {
         show_error "No se pudo descargar la plantilla de Chatwoot."
     fi
     execute "cp \"$stack_file\" \"$deploy_file\""
+    
+    # ---------------------------------------------
+    # SUSTITUCIONES ORIGINALES
+    # ---------------------------------------------
     execute "sed -i 's#REPLACE_PASSWORD#\"$COMMON_PASSWORD\"#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_SECRET_KEY#\"$SECRET_KEY\"#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_SUBDOMAIN#$subdomain#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_DOMAIN#$BASE_DOMAIN#g' \"$deploy_file\""
-    show_success "Variables de Chatwoot sustituidas."
+
+    # ---------------------------------------------
+    # FIX V9.6.0: CORRECCIÓN DEL NOMBRE DEL HOST DE LA DB EN SWARM
+    # Reemplazamos el nombre incompleto ('chatwoot-postgres') por el nombre completo de Swarm (stack_service).
+    # ---------------------------------------------
+    show_info "Aplicando FIX de DNS/Host: reemplazando 'chatwoot-postgres' por 'chatwoot_chatwoot-postgres'"
+    execute "sed -i 's#chatwoot-postgres#chatwoot_chatwoot-postgres#g' \"$deploy_file\""
+    show_success "Variables de Chatwoot sustituidas y Host de DB corregido."
 
     show_info "Desplegando Chatwoot en Docker Swarm..."
     execute "docker stack deploy -c \"$deploy_file\" \"$tool_name\""
@@ -89,8 +99,7 @@ initialize_chatwoot_db() {
     
     show_info "1/4: Sobreescribiendo /app/config/database.yml con POSTGRES_USERNAME (Inyección Directa)..."
 
-    # FIX V9.5.0: Usar Here-Document literal y canalizar su contenido directamente.
-    # Se usa POSTGRES_USERNAME para evitar el KeyError.
+    # FIX V9.5.0: Inyección Directa con la variable correcta: POSTGRES_USERNAME.
     if ! docker exec -i "$container_id" /bin/sh -c "cat > /app/config/database.yml" <<'YAML_CONTENT_LITERAL' ; then
 production:
   adapter: postgresql
@@ -135,9 +144,9 @@ YAML_CONTENT_LITERAL
 # 4. Lógica Principal
 # ------------------------------
 
-# 1. Despliega el stack de Chatwoot
+# 1. Despliega el stack de Chatwoot (con el DNS Host corregido)
 substitute_and_deploy_chatwoot 
-# 2. Inicializa la base de datos con el parche
+# 2. Inicializa la base de datos (con YAML y variables corregidas)
 initialize_chatwoot_db 
 
 # ------------------------------

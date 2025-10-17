@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v6.1.0 - ZERO TO HERO)
-# Realiza la instalación completa desde cero (Docker, Swarm, Servicios)
-# Utiliza URLs de plantillas de GitHub y corrige errores de volumen/DB de Chatwoot.
+# INSTALADOR AUTÓNOMO FINAL (v7.0.0 - FIX DE COMPATIBILIDAD DOCKER COMPOSE)
+# Arregla el error "unknown shorthand flag: 'f' in -f"
 # =================================================================================
 
 # ------------------------------
@@ -125,7 +124,7 @@ substitute_and_deploy_tool() {
 }
 
 # ------------------------------
-# 4. Función de Inicialización de Chatwoot (CORREGIDA)
+# 4. Función de Inicialización de Chatwoot (FIX DE COMPATIBILIDAD)
 # ------------------------------
 initialize_chatwoot_db() {
     show_info "Iniciando proceso de inicialización de la base de datos de Chatwoot..."
@@ -137,11 +136,10 @@ initialize_chatwoot_db() {
     show_info "Esperando 15 segundos adicionales para asegurar que PostgreSQL esté listo..."
     sleep 15
     
-    # **CORRECCIÓN DE SERVICIO:** El servicio para el comando de inicialización es 'rails'
+    # **FIX V7.0.0:** Cambiar 'docker compose' por 'docker-compose' para compatibilidad con -f
     show_info "Ejecutando setup y seed de la base de datos dentro del servicio 'rails'..."
     
-    # Se usa 'rails' como nombre de servicio y 'bundle exec'
-    execute "docker compose -f \"$deploy_file\" run --rm rails bundle exec rails db:chatwoot_setup"
+    execute "docker-compose -f \"$deploy_file\" run --rm rails bundle exec rails db:chatwoot_setup"
     
     show_success "Inicialización de base de datos completada exitosamente."
 }

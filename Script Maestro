@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # =================================================================================
-# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.2 - CORRECCIÓN DE BASH PIPES)
+# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.3 - CORRECCIÓN DE ERRORES BLOQUEANTES)
 # 🚨 REQUIERE: Las siguientes variables de entorno DEBEN exportarse antes de ejecutar:
 #    export INSTALL_PASSWORD="TU_CONTRASEÑA"
 #    export INSTALL_DOMAIN="TU_DOMINIO.COM"
-#    export INSTALL_SECRET_KEY="TU_CLAVE_SECRETA_DE_32_CARACTERES" (Opcional, se genera si no se provee)
+#    export INSTALL_SECRET_KEY="TU_CLAVE_SECRETA_DE_32_CARACTERES" (Opcional)
 # =================================================================================
 
 set -euo pipefail
 
-SCRIPT_VERSION="6.0.2-PUBLIC-MASTER"
+SCRIPT_VERSION="6.0.3-PUBLIC-MASTER"
 
 # Colores y Utilidades
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -64,7 +64,7 @@ run_command() {
     
     echo -e "  -> Ejecutando: \033[0;33m$full_cmd\033[0m"
 
-    # CORRECCIÓN V6.0.2: Usamos 'eval' para interpretar correctamente pipes y redirecciones.
+    # V6.0.2: Usamos 'eval' para interpretar pipes y redirecciones.
     if eval "$full_cmd"; then 
         show_success "Completado: $msg"
         return 0
@@ -133,7 +133,6 @@ install_dependencies() {
         
         show_message "Instalando Docker..."
         $SUDO install -m 0755 -d /etc/apt/keyrings
-        # ESTE COMANDO CONTIENE EL PIPE Y AHORA DEBERÍA FUNCIONAR GRACIAS A 'EVAL'
         run_command "curl -fsSL https://download.docker.com/linux/$OS_DETECTED/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg" "Descargando clave GPG de Docker..."
         echo \
 "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$OS_DETECTED \
@@ -171,10 +170,20 @@ install_server_tools() {
     # Configuración de seguridad (Fail2Ban, RKHunter, UFW)
     run_command "apt-get install -y fail2ban && systemctl enable fail2ban && systemctl start fail2ban" "Instalando y activando Fail2Ban..."
     run_command "apt-get install -y rkhunter" "Instalando RKHunter..."
+    
     local config_file="/etc/rkhunter.conf"
     run_command "$SUDO sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && $SUDO sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && $SUDO sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" "Configurando RKHunter..."
-    run_command "rkhunter --update" "Actualizando RKHunter..."
-    run_command "rkhunter --propupd" "Actualizando base de datos de propiedades de RKHunter..."
+    
+    # V6.0.3 CORRECCIÓN: Tolerancia a fallos de RKHunter --update, que fue lo que detuvo el script.
+    if ! run_command "rkhunter --update" "Actualizando RKHunter..."; then
+        show_warning "La actualizacion de RKHunter fallo. Se continua la instalacion."
+    fi
+    
+    # V6.0.3 CORRECCIÓN: Tolerancia a fallos de RKHunter --propupd.
+    if ! run_command "rkhunter --propupd" "Actualizando base de datos de propiedades de RKHunter..."; then
+        show_warning "La actualizacion de propiedades de RKHunter fallo. Se continua la instalacion."
+    fi
+    
     run_command "apt-get install -y chkrootkit" "Instalando CHKRootkit..."
     run_command "apt-get install -y ufw" "Instalando UFW..."
     run_command "ufw allow ssh && ufw allow http && ufw allow https && echo 'y' | ufw enable" "Configurando y activando reglas básicas de UFW..."

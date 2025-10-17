@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v4.0.0)
-# - Sin Token de Instalación.
-# - Sustitución segura de claves (prevención de errores YAML).
-# - Incluye todas las URLs de descarga de plantillas de GitHub.
-# - Incluye la lógica de inicialización de Chatwoot.
+# INSTALADOR AUTÓNOMO FINAL (v5.0.0 - CORREGIDO)
+# - Soluciona el error 'no such service: chatwoot'
+# - Utiliza las URLs de GitHub proporcionadas.
 # =================================================================================
 
 # ------------------------------
@@ -16,20 +14,20 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# TUS VARIABLES (HARDCODEADAS para ejecución sin interacción)
+# TUS VARIABLES
 DOCKER_DIR="/home/docker"
 COMMON_PASSWORD="Adel14881599"        
 SECRET_KEY="wKStf8R8fAt7W78olV8D8kU5rdiqr31O"
 BASE_DOMAIN="queennovedad.shop"
 
-# Definición de herramientas y subdominios (Orden: Base -> Servicios)
+# Definición de herramientas y subdominios
 declare -a ALL_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 declare -gA SUBDOMAINS=(
     [traefik]="proxy" [portainer]="admin" [redis]="redis" [postgres]="postgres" 
     [n8n]="n8" [evoapi]="evoapi" [chatwoot]="chat"
 )
 
-# URLs de descarga (URLs de GitHub proporcionadas)
+# URLs de descarga
 declare -gA STACK_URLS=(
     [traefik]="https://github.com/user-attachments/files/22956506/traefik-stack.yml"
     [portainer]="https://github.com/user-attachments/files/22956492/portainer-stack.yml"
@@ -95,12 +93,9 @@ substitute_and_deploy_tool() {
     
     # 💥 SUSTITUCIÓN SEGURA: Usamos 'sed' con comillas dobles forzadas
     show_info "Sustituyendo variables de entorno con sintaxis YAML segura..."
-
-    # Sustituir Contraseña y Clave Secreta, FORZANDO COMILLAS DOBLES
+    
     execute "sed -i 's#REPLACE_PASSWORD#\"$COMMON_PASSWORD\"#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_SECRET_KEY#\"$SECRET_KEY\"#g' \"$deploy_file\""
-
-    # Sustituir Dominio y Subdominio (para URLs de Traefik)
     execute "sed -i 's#REPLACE_SUBDOMAIN#$subdomain#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_DOMAIN#$BASE_DOMAIN#g' \"$deploy_file\""
     
@@ -118,60 +113,53 @@ substitute_and_deploy_tool() {
     fi
 }
 
-# Función para la inicialización de Chatwoot
+# ------------------------------
+# 4. Función de Inicialización de Chatwoot (CORREGIDA)
+# ------------------------------
 initialize_chatwoot_db() {
     show_info "Iniciando proceso de inicialización de la base de datos de Chatwoot..."
     
     local chatwoot_stack="chatwoot"
     local deploy_file="$DOCKER_DIR/$chatwoot_stack/$chatwoot_stack-deploy.yml"
-    local init_stack_file="$DOCKER_DIR/$chatwoot_stack/chatwoot-db-init.yml"
 
-    # Crear un stack temporal para la inicialización.
-    # El archivo de despliegue principal debe contener un servicio para inicializar.
+    # 💥 CORRECCIÓN: El servicio para ejecutar el comando es 'rails' (nombre interno)
+    # y usamos 'bundle exec' que es estándar en Chatwoot.
+    show_info "Ejecutando setup y seed de la base de datos dentro del servicio 'rails'..."
     
-    # 1. Ejecutar db:setup y db:seed (Simulado de tu script original)
-    show_info "Ejecutando setup y seed de la base de datos de Chatwoot..."
+    # El comando docker compose run funciona con el nombre del servicio interno ('rails')
+    # incluso en Swarm, pero puede ser inestable. Lo mantenemos porque es la lógica más cercana a tu script.
+    execute "docker compose -f \"$deploy_file\" run --rm rails bundle exec rails db:chatwoot_setup"
     
-    execute "docker compose -f \"$deploy_file\" run --rm chatwoot rails db:chatwoot_setup"
-    
-    # 2. Eliminar cualquier residuo del stack temporal si es que se usó
-    # execute "docker stack rm chatwoot-init || true"
-
     show_success "Inicialización de base de datos completada exitosamente."
 }
 
+
 # ------------------------------
-# 4. Lógica Principal
+# 5. Lógica Principal
 # ------------------------------
 
-# 4a. Ejecutar la instalación base
 install_dependencies
 
-# 4b. Instalar todas las herramientas
 show_info "Iniciando despliegue de todos los servicios..."
 for tool_name in "${ALL_TOOLS[@]}"; do
     substitute_and_deploy_tool "$tool_name"
     
-    # Lógica de inicialización de Chatwoot
     if [ "$tool_name" = "chatwoot" ]; then
-        # Después de desplegar el stack de Chatwoot, inicializar la BBDD
-        show_info "Esperando 30 segundos a que el contenedor de Chatwoot inicie por primera vez..."
+        show_info "Esperando 30 segundos a que el contenedor principal de Chatwoot (rails) inicie..."
         sleep 30
         initialize_chatwoot_db
     fi
 done
 
 # ------------------------------
-# 5. Resultados Finales
+# 6. Resultados Finales
 # ------------------------------
-
-# Guardar credenciales en el archivo .env.global
 show_info "Guardando credenciales en $DOCKER_DIR/.env.global..."
 echo "COMMON_PASSWORD=$COMMON_PASSWORD" > "$DOCKER_DIR/.env.global"
 echo "BASE_DOMAIN=$BASE_DOMAIN" >> "$DOCKER_DIR/.env.global"
 echo "SECRET_KEY=$SECRET_KEY" >> "$DOCKER_DIR/.env.global"
 
-show_success "¡Instalación completada!"
+show_success "¡Instalación completada! 🎉"
 echo ""
 echo "Accede a tus servicios en los siguientes URLs:"
 echo "- Traefik: https://${SUBDOMAINS[traefik]}.$BASE_DOMAIN"
@@ -186,4 +174,3 @@ echo "Información de credenciales:"
 echo "- Contraseña común: $COMMON_PASSWORD"
 echo "- Clave secreta: $SECRET_KEY"
 echo ""
-echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"

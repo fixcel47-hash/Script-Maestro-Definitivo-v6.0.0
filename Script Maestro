@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =================================================================================
-# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.4 - CORRECCIÓN DE SINTAXIS N8N)
+# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.5 - CORRECCIÓN DE SINTAXIS N8N ROBUSTA)
 # 🚨 REQUIERE: Las siguientes variables de entorno DEBEN exportarse antes de ejecutar:
 #    export INSTALL_PASSWORD="TU_CONTRASEÑA"
 #    export INSTALL_DOMAIN="TU_DOMINIO.COM"
@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="6.0.4-PUBLIC-MASTER"
+SCRIPT_VERSION="6.0.5-PUBLIC-MASTER"
 
 # Colores y Utilidades
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -19,6 +19,12 @@ show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 generate_random_key() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
 register_temp_file() { TEMP_FILES+=("$1"); }
+
+# Funcion para escapar caracteres especiales para sed, asegurando que los strings pasen bien al YAML.
+safe_escape() {
+    # Escapa caracteres especiales que pueden romper sed o YAML (/, &, |, \)
+    echo "$1" | sed 's/[/&|\]/\\&/g'
+}
 
 # Variables Globales
 SUDO=""
@@ -30,6 +36,8 @@ declare -a CUSTOM_SUBDOMAINS
 COMMON_PASSWORD=""
 BASE_DOMAIN=""
 SECRET_KEY=""
+COMMON_PASSWORD_SAFE=""
+SECRET_KEY_SAFE=""
 
 # Definiciones de Herramientas y URLs
 declare -gA STACK_URLS=(
@@ -335,11 +343,14 @@ install_docker_tool() {
     if ! download_file "$stack_url" "$stack_file"; then exit 1; fi
     sanitize_yaml "$stack_file" "$deploy_file"; register_temp_file "$deploy_file"
     
-    # V6.0.4 CORRECCIÓN: Sustitución de valores sensibles usando comillas simples 
-    # para evitar errores de sintaxis YAML (como el error 'must be a string' en n8n).
-    perl -pi -e "s|<REPLACE_ME>|'$COMMON_PASSWORD'|g" "$deploy_file"
-    perl -pi -e "s|REPLACE_PASSWORD|'$COMMON_PASSWORD'|g" "$deploy_file"
-    perl -pi -e "s|REPLACE_SECRET_KEY|'$SECRET_KEY'|g" "$deploy_file"
+    # V6.0.5 CORRECCIÓN: Sustitución de valores sensibles usando sed con delimitador |
+    # y variables con escape previo para asegurar comillas simples y evitar la ruptura del YAML.
+    
+    # Usamos sed con el delimitador | para la sustitución de variables sensibles con comillas.
+    # El escape previo asegura que caracteres especiales en las variables no rompan el sed/yaml.
+    sed -i "s|REPLACE_ME|'$COMMON_PASSWORD_SAFE'|g" "$deploy_file"
+    sed -i "s|REPLACE_PASSWORD|'$COMMON_PASSWORD_SAFE'|g" "$deploy_file"
+    sed -i "s|REPLACE_SECRET_KEY|'$SECRET_KEY_SAFE'|g" "$deploy_file"
     
     # Sustitución de dominio (no necesita comillas, ya debe estar en el stack)
     sed -i "s|REPLACE_SUBDOMAIN|$SUBDOMAIN|g" "$deploy_file"
@@ -380,6 +391,11 @@ main() {
     COMMON_PASSWORD="${INSTALL_PASSWORD}"
     BASE_DOMAIN="${INSTALL_DOMAIN}"
     SECRET_KEY="${INSTALL_SECRET_KEY:-$(generate_random_key)}" # Genera si no se proporciona
+    
+    # --- V6.0.5: ESCAPE DE CARACTERES ESPECIALES ---
+    COMMON_PASSWORD_SAFE=$(safe_escape "$COMMON_PASSWORD")
+    SECRET_KEY_SAFE=$(safe_escape "$SECRET_KEY")
+    # ---------------------------------------------
 
     show_message "Configuracion (ENV VARS): Contraseña: ***, Dominio: $BASE_DOMAIN, Clave Secreta: $SECRET_KEY"
 

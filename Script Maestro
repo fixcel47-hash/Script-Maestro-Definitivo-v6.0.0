@@ -246,7 +246,7 @@ initialize_chatwoot_database() {
         sleep 5; attempt=$((attempt + 1));
         container_id=$(docker ps --filter "name=redis_redis" --format "{{.ID}}" | head -n 1)
     done
-    if [ "$redis_ready" = false ]; then show_error "Redis no está disponible"; return 1; fi
+    if [ "$redis_ready" = false ]; then show_error "Redis no está disponible"; return 1; }
     
     # 2. Crear y desplegar stack temporal para inicialización
     local init_stack_file="/tmp/chatwoot-init-stack.yml"

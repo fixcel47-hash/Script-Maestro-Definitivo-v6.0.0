@@ -1,33 +1,33 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR AUTÓNOMO FINAL (v5.0.0 - CORREGIDO)
-# - Soluciona el error 'no such service: chatwoot'
-# - Utiliza las URLs de GitHub proporcionadas.
+# INSTALADOR AUTÓNOMO FINAL (v6.1.0 - ZERO TO HERO)
+# Realiza la instalación completa desde cero (Docker, Swarm, Servicios)
+# Utiliza URLs de plantillas de GitHub y corrige errores de volumen/DB de Chatwoot.
 # =================================================================================
 
 # ------------------------------
-# 1. Configuración de Variables
+# 1. Configuración de Variables y Estilos
 # ------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# TUS VARIABLES
+# TUS VARIABLES (Hardcodeadas)
 DOCKER_DIR="/home/docker"
 COMMON_PASSWORD="Adel14881599"        
 SECRET_KEY="wKStf8R8fAt7W78olV8D8kU5rdiqr31O"
 BASE_DOMAIN="queennovedad.shop"
 
-# Definición de herramientas y subdominios
+# Definición de herramientas y subdominios (Orden: Base -> Servicios)
 declare -a ALL_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 declare -gA SUBDOMAINS=(
     [traefik]="proxy" [portainer]="admin" [redis]="redis" [postgres]="postgres" 
     [n8n]="n8" [evoapi]="evoapi" [chatwoot]="chat"
 )
 
-# URLs de descarga
+# URLs de descarga de tus plantillas de GitHub
 declare -gA STACK_URLS=(
     [traefik]="https://github.com/user-attachments/files/22956506/traefik-stack.yml"
     [portainer]="https://github.com/user-attachments/files/22956492/portainer-stack.yml"
@@ -47,16 +47,19 @@ show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 execute() { local cmd="$1"; show_info "-> Ejecutando: $cmd"; eval "$cmd"; if [ $? -ne 0 ]; then show_error "Comando falló con código $?: $cmd"; fi; }
 
-# Función de instalación inicial
+# Función de instalación de dependencias y Docker
 install_dependencies() {
-    show_info "Verificando e instalando dependencias (Docker y Swarm)..."
-    if ! command -v docker &> /dev/null; then
-        execute "apt update"
-        execute "apt install -y curl docker.io docker-compose jq"
-        execute "systemctl start docker"
-        execute "systemctl enable docker"
+    show_info "Verificando permisos (debe ser root/sudo)..."
+    if [ "$EUID" -ne 0 ]; then
+        show_error "Por favor, ejecuta este script como root o con sudo."
     fi
-    show_success "Docker instalado."
+
+    show_info "Instalando dependencias (curl, docker, jq)..."
+    execute "apt update"
+    execute "apt install -y curl docker.io docker-compose jq"
+    execute "systemctl start docker"
+    execute "systemctl enable docker"
+    show_success "Docker y dependencias instaladas."
     
     show_info "Inicializando Docker Swarm..."
     execute "docker swarm init --advertise-addr $(hostname -I | awk '{print $1}') || true"
@@ -79,34 +82,42 @@ substitute_and_deploy_tool() {
     local stack_file="$tool_dir/$tool_name-stack.yml"
     local deploy_file="$tool_dir/$tool_name-deploy.yml"
 
-    # Crear directorios
+    # 1. Crear directorios base
     execute "mkdir -p \"$tool_dir\""
     
-    # Descargar plantilla
+    # **CORRECCIÓN DE VOLUMEN:** Crear el directorio de almacenamiento persistente para Chatwoot.
+    if [ "$tool_name" = "chatwoot" ]; then
+        show_info "Creando directorio de almacenamiento persistente para Chatwoot..."
+        execute "mkdir -p \"$tool_dir/chatwoot_storage\""
+    fi
+
+    # 2. Descargar plantilla
     show_info "Descargando plantilla para $tool_name desde GitHub..."
     if ! curl -fsSL "$stack_url" -o "$stack_file"; then
         show_error "No se pudo descargar la plantilla de $tool_name. Verifique la URL: $stack_url"
     fi
 
-    # Copiar para despliegue
+    # 3. Copiar para despliegue y Sustitución Segura
     execute "cp \"$stack_file\" \"$deploy_file\""
     
-    # 💥 SUSTITUCIÓN SEGURA: Usamos 'sed' con comillas dobles forzadas
     show_info "Sustituyendo variables de entorno con sintaxis YAML segura..."
     
+    # Sustituir Contraseña y Clave Secreta, FORZANDO COMILLAS DOBLES (Corrige error YAML)
     execute "sed -i 's#REPLACE_PASSWORD#\"$COMMON_PASSWORD\"#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_SECRET_KEY#\"$SECRET_KEY\"#g' \"$deploy_file\""
+
+    # Sustituir Dominio y Subdominio
     execute "sed -i 's#REPLACE_SUBDOMAIN#$subdomain#g' \"$deploy_file\""
     execute "sed -i 's#REPLACE_DOMAIN#$BASE_DOMAIN#g' \"$deploy_file\""
     
     show_success "Variables de $tool_name sustituidas."
 
-    # Desplegar el stack
+    # 4. Desplegar el stack
     show_info "Desplegando $tool_name en Docker Swarm..."
     execute "docker stack deploy -c \"$deploy_file\" \"$tool_name\""
     show_success "$tool_name instalado correctamente."
 
-    # Pausa para BBDD
+    # 5. Pausa para BBDD
     if [ "$tool_name" = "postgres" ] || [ "$tool_name" = "redis" ]; then
         show_info "Esperando 15 segundos para estabilización de la BBDD..."
         sleep 15
@@ -122,12 +133,14 @@ initialize_chatwoot_db() {
     local chatwoot_stack="chatwoot"
     local deploy_file="$DOCKER_DIR/$chatwoot_stack/$chatwoot_stack-deploy.yml"
 
-    # 💥 CORRECCIÓN: El servicio para ejecutar el comando es 'rails' (nombre interno)
-    # y usamos 'bundle exec' que es estándar en Chatwoot.
+    # Espera extra para asegurar que PostgreSQL esté completamente listo
+    show_info "Esperando 15 segundos adicionales para asegurar que PostgreSQL esté listo..."
+    sleep 15
+    
+    # **CORRECCIÓN DE SERVICIO:** El servicio para el comando de inicialización es 'rails'
     show_info "Ejecutando setup y seed de la base de datos dentro del servicio 'rails'..."
     
-    # El comando docker compose run funciona con el nombre del servicio interno ('rails')
-    # incluso en Swarm, pero puede ser inestable. Lo mantenemos porque es la lógica más cercana a tu script.
+    # Se usa 'rails' como nombre de servicio y 'bundle exec'
     execute "docker compose -f \"$deploy_file\" run --rm rails bundle exec rails db:chatwoot_setup"
     
     show_success "Inicialización de base de datos completada exitosamente."
@@ -154,6 +167,7 @@ done
 # ------------------------------
 # 6. Resultados Finales
 # ------------------------------
+
 show_info "Guardando credenciales en $DOCKER_DIR/.env.global..."
 echo "COMMON_PASSWORD=$COMMON_PASSWORD" > "$DOCKER_DIR/.env.global"
 echo "BASE_DOMAIN=$BASE_DOMAIN" >> "$DOCKER_DIR/.env.global"
@@ -174,3 +188,4 @@ echo "Información de credenciales:"
 echo "- Contraseña común: $COMMON_PASSWORD"
 echo "- Clave secreta: $SECRET_KEY"
 echo ""
+echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"

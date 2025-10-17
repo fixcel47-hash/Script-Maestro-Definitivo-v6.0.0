@@ -1,30 +1,22 @@
-# =================================================================================
-# BLOQUE DE INSTALACIÓN MAESTRO (v6.0.0 - FLUIDO Y LIMPIO)
-# Usa este bloque para evitar el error de sintaxis del repositorio.
-# =================================================================================
-
-# 1. DEFINE AQUÍ TUS CREDENCIALES
-export INSTALL_PASSWORD="Adel14881599"
-export INSTALL_DOMAIN="queennovedad.shop"
-export INSTALL_SECRET_KEY="wKStf8R8fAt7W78olV8D8kU5rdiqr31O" 
-
-# 2. Guardar el código final del script maestro mejorado (código sin error de caracter)
-cat > unified_installer_master_v6.sh <<'EOF'
 #!/usr/bin/env bash
 # =================================================================================
-# UNIFIED INSTALLER SCRIPT (v6.0.0 - MAESTRO FINAL NO INTERACTIVO)
-# - Lee configuracion solo de variables de entorno.
+# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.1 - AUTÓNOMO SIN CREDENCIALES)
+# 🚨 REQUIERE: Las siguientes variables de entorno DEBEN exportarse antes de ejecutar:
+#    export INSTALL_PASSWORD="TU_CONTRASEÑA"
+#    export INSTALL_DOMAIN="TU_DOMINIO.COM"
+#    export INSTALL_SECRET_KEY="TU_CLAVE_SECRETA_DE_32_CARACTERES" (Opcional, se genera si no se provee)
 # =================================================================================
 
 set -euo pipefail
 
-SCRIPT_VERSION="6.0.0-FINAL-MASTER"
+SCRIPT_VERSION="6.0.1-PUBLIC-MASTER"
 
 # Colores y Utilidades
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 show_message() { echo -e "${BLUE}[INFO]${NC} $1"; }
 show_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+show_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 generate_random_key() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
 register_temp_file() { TEMP_FILES+=("$1"); }
 
@@ -39,7 +31,7 @@ COMMON_PASSWORD=""
 BASE_DOMAIN=""
 SECRET_KEY=""
 
-# Definiciones de Herramientas y URLs (Mantenidas)
+# Definiciones de Herramientas y URLs
 declare -gA STACK_URLS=(
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
     [evoapi]="https://github.com/user-attachments/files/22956481/evoapi-stack.yml"
@@ -53,12 +45,10 @@ AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwo
 SELECTED_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "postgres" "n8" "evoapi" "chat")
 
-
 # -------------------------------
 # FUNCIONES DE EJECUCIÓN Y LIMPIEZA
 # -------------------------------
 
-# Función de ejecución de comandos (Mejorada para transparencia)
 run_command() {
     local cmd="$1"
     local msg="$2"
@@ -66,7 +56,6 @@ run_command() {
     show_message "$msg"
     
     local full_cmd
-    # Asegura que SUDO se use correctamente, excepto para comandos docker internos
     if [ -n "$SUDO" ] && [[ "$cmd" != docker* ]] && [[ "$cmd" != *"$SUDO"* ]]; then
         full_cmd="$SUDO $cmd"
     else
@@ -89,14 +78,12 @@ cleanup() {
     local exit_code=$1; local delete_stacks=${2:-false} 
     show_message "Realizando limpieza antes de salir..."
     
-    # Limpieza de archivos temporales
     if [ ${#TEMP_FILES[@]} -gt 0 ]; then
         for file in "${TEMP_FILES[@]}"; do
             if [ -f "$file" ]; then $SUDO rm -f "$file"; fi
         done
     fi
     
-    # Eliminación de stacks y archivos de despliegue
     if [ "$delete_stacks" = true ]; then
         show_message "Eliminando stacks de Docker Swarm..."
         for tool_name in "${SELECTED_TOOLS[@]}"; do
@@ -109,7 +96,6 @@ cleanup() {
     
     if [ $exit_code -ne 0 ]; then show_error "La instalacion ha fallado. Revise los logs para mas informacion."; fi
     
-    # Lógica de autodestrucción
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
         local self_destruct_script="/tmp/self_destruct_$$_$(date +%s).sh"
         cat > "$self_destruct_script" << EOF
@@ -132,7 +118,7 @@ trap 'cleanup 1 false; exit 1' SIGHUP SIGINT SIGQUIT SIGTERM
 trap 'cleanup 1 false; exit 1' ERR
 
 # -------------------------------
-# FUNCIONES DE INSTALACIÓN BASE Y SEGURIDAD
+# FUNCIONES DE INSTALACIÓN BASE
 # -------------------------------
 
 install_dependencies() {
@@ -158,7 +144,6 @@ $(lsb_release -cs) stable" | $SUDO tee /etc/apt/sources.list.d/docker.list > /de
     run_command "systemctl enable docker" "Habilitando servicio Docker..."
     run_command "systemctl start docker" "Iniciando servicio Docker..."
     
-    # Configuración de logs y Swarm (fusionada para ser más limpia)
     local config_file="/etc/docker/daemon.json"
     $SUDO cat > "$config_file" <<EOF
 {
@@ -167,7 +152,7 @@ $(lsb_release -cs) stable" | $SUDO tee /etc/apt/sources.list.d/docker.list > /de
 EOF
     run_command "systemctl restart docker" "Reiniciando Docker para aplicar configuración de logs..."
     
-    initialize_docker_swarm # Llamada de Swarm aquí para flujo lógico
+    initialize_docker_swarm 
 }
 
 initialize_docker_swarm() {
@@ -209,7 +194,7 @@ create_docker_networks() {
 }
 
 # -------------------------------
-# FUNCIONES DE DESPLIEGUE (Chatwoot con lógica robusta)
+# FUNCIONES DE DESPLIEGUE
 # -------------------------------
 
 download_file() {
@@ -241,14 +226,14 @@ create_volume_directories() {
     for path in $volume_paths; do run_command "mkdir -p \"$path\"" "Creando directorio $path..."; done
 }
 
-# Lógica de Chatwoot (Mantiene el chequeo de Redis y PostgreSQL)
+# Lógica de Chatwoot (Verificada)
 initialize_chatwoot_database() {
     local tool_name="chatwoot"
     local subdomain=$1
     
     show_message "Inicializando base de datos de Chatwoot (Verificación y Despliegue Temporal)..."
     
-    # 1. Verificar Redis (espera hasta 5 minutos)
+    # 1. Verificar Redis 
     show_message "Verificando disponibilidad de Redis..."
     local redis_ready=false; local max_attempts=60; local attempt=0; local container_id
     container_id=$(docker ps --filter "name=redis_redis" --format "{{.ID}}" | head -n 1)
@@ -351,7 +336,7 @@ install_docker_tool() {
 # Chequeo de Root (Ejecutado al principio, fuera de main)
 echo "=== Instalador Universal v$SCRIPT_VERSION ==="
 if [ "$(id -u)" -ne 0 ]; then
-    if ! command -v sudo >/dev/null 2>&1; then show_error "No eres root y 'sudo' no esta instalado."; exit 1; fi
+    if ! command -v sudo &> /dev/null; then show_error "No eres root y 'sudo' no esta instalado."; exit 1; fi
     SUDO="sudo"; show_message "Ejecutando con sudo...";
 else
     SUDO=""; show_message "Ejecutando como root...";
@@ -361,9 +346,9 @@ if [ -f /etc/os-release ]; then . /etc/os-release; show_message "Sistema detecta
 
 main() {
     
-    # LECTURA DE VARIABLES DE ENTORNO (Completamente no interactivo)
-    if [ -z "${INSTALL_PASSWORD:-}" ]; then show_error "❌ Contraseña no definida. Exporta INSTALL_PASSWORD."; exit 1; fi
-    if [ -z "${INSTALL_DOMAIN:-}" ]; then show_error "❌ Dominio no definido. Exporta INSTALL_DOMAIN."; exit 1; fi
+    # ⚠️ VALIDACIÓN CRÍTICA DE VARIABLES DE ENTORNO PÚBLICAS
+    if [ -z "${INSTALL_PASSWORD:-}" ]; then show_error "❌ Contraseña no definida. Exporta INSTALL_PASSWORD (obligatorio)."; exit 1; fi
+    if [ -z "${INSTALL_DOMAIN:-}" ]; then show_error "❌ Dominio no definido. Exporta INSTALL_DOMAIN (obligatorio)."; exit 1; fi
     
     COMMON_PASSWORD="${INSTALL_PASSWORD}"
     BASE_DOMAIN="${INSTALL_DOMAIN}"
@@ -440,8 +425,3 @@ EOL
 }
 
 main
-EOF
-
-# 3. Dar permisos de ejecución y ejecutar el script
-chmod +x unified_installer_master_v6.sh
-./unified_installer_master_v6.sh

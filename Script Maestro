@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =================================================================================
-# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.5 - CORRECCIÓN DE SINTAXIS N8N ROBUSTA)
+# SCRIPT MAESTRO DEFINITIVO PÚBLICO (v6.0.6 - CORRECCIÓN DEFINITIVA DE SINTAXIS)
 # 🚨 REQUIERE: Las siguientes variables de entorno DEBEN exportarse antes de ejecutar:
 #    export INSTALL_PASSWORD="TU_CONTRASEÑA"
 #    export INSTALL_DOMAIN="TU_DOMINIO.COM"
@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="6.0.5-PUBLIC-MASTER"
+SCRIPT_VERSION="6.0.6-PUBLIC-MASTER"
 
 # Colores y Utilidades
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -23,7 +23,7 @@ register_temp_file() { TEMP_FILES+=("$1"); }
 # Funcion para escapar caracteres especiales para sed, asegurando que los strings pasen bien al YAML.
 safe_escape() {
     # Escapa caracteres especiales que pueden romper sed o YAML (/, &, |, \)
-    echo "$1" | sed 's/[/&|\]/\\&/g'
+    echo "$1" | sed 's/[/&|\\#]/\\&/g'
 }
 
 # Variables Globales
@@ -72,7 +72,6 @@ run_command() {
     
     echo -e "  -> Ejecutando: \033[0;33m$full_cmd\033[0m"
 
-    # V6.0.2: Usamos 'eval' para interpretar pipes y redirecciones.
     if eval "$full_cmd"; then 
         show_success "Completado: $msg"
         return 0
@@ -182,12 +181,12 @@ install_server_tools() {
     local config_file="/etc/rkhunter.conf"
     run_command "$SUDO sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && $SUDO sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && $SUDO sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" "Configurando RKHunter..."
     
-    # V6.0.3 CORRECCIÓN: Tolerancia a fallos de RKHunter --update.
+    # Tolerancia a fallos de RKHunter --update.
     if ! run_command "rkhunter --update" "Actualizando RKHunter..."; then
         show_warning "La actualizacion de RKHunter fallo. Se continua la instalacion."
     fi
     
-    # V6.0.3 CORRECCIÓN: Tolerancia a fallos de RKHunter --propupd.
+    # Tolerancia a fallos de RKHunter --propupd.
     if ! run_command "rkhunter --propupd" "Actualizando base de datos de propiedades de RKHunter..."; then
         show_warning "La actualizacion de propiedades de RKHunter fallo. Se continua la instalacion."
     fi
@@ -343,18 +342,17 @@ install_docker_tool() {
     if ! download_file "$stack_url" "$stack_file"; then exit 1; fi
     sanitize_yaml "$stack_file" "$deploy_file"; register_temp_file "$deploy_file"
     
-    # V6.0.5 CORRECCIÓN: Sustitución de valores sensibles usando sed con delimitador |
-    # y variables con escape previo para asegurar comillas simples y evitar la ruptura del YAML.
+    # V6.0.6 CORRECCIÓN: Usar delimitador # y comillas dobles para máxima compatibilidad YAML
+    # Esto soluciona errores persistentes cuando las variables contienen caracteres difíciles.
     
-    # Usamos sed con el delimitador | para la sustitución de variables sensibles con comillas.
-    # El escape previo asegura que caracteres especiales en las variables no rompan el sed/yaml.
-    sed -i "s|REPLACE_ME|'$COMMON_PASSWORD_SAFE'|g" "$deploy_file"
-    sed -i "s|REPLACE_PASSWORD|'$COMMON_PASSWORD_SAFE'|g" "$deploy_file"
-    sed -i "s|REPLACE_SECRET_KEY|'$SECRET_KEY_SAFE'|g" "$deploy_file"
+    # Sustitución de valores sensibles usando sed con delimitador # y comillas dobles
+    sed -i "s#REPLACE_ME#\"$COMMON_PASSWORD_SAFE\"#g" "$deploy_file"
+    sed -i "s#REPLACE_PASSWORD#\"$COMMON_PASSWORD_SAFE\"#g" "$deploy_file"
+    sed -i "s#REPLACE_SECRET_KEY#\"$SECRET_KEY_SAFE\"#g" "$deploy_file"
     
     # Sustitución de dominio (no necesita comillas, ya debe estar en el stack)
-    sed -i "s|REPLACE_SUBDOMAIN|$SUBDOMAIN|g" "$deploy_file"
-    sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$deploy_file"
+    sed -i "s#REPLACE_SUBDOMAIN#$SUBDOMAIN#g" "$deploy_file"
+    sed -i "s#REPLACE_DOMAIN#$BASE_DOMAIN#g" "$deploy_file"
 
 
     create_volume_directories "$deploy_file" "$tool_name"

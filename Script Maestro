@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# UNIFIED INSTALLER SCRIPT (v3.0.1 - FIX Redis Check)
+# UNIFIED INSTALLER SCRIPT (v3.0.2 - FIX YAML/Redis Syntax)
 # ¡Script independiente sin API ni tokens!
 # =================================================================================
 
-SCRIPT_VERSION="3.0.1-FIX"
+SCRIPT_VERSION="3.0.2-FIX"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -78,15 +78,19 @@ run_command() {
     
     show_message "$msg"
     # Ejecutar en subshell para capturar el PID y redirigir la salida
-    eval "$cmd" > /dev/null 2>&1 &
-    local cmd_pid=$!
-    spinner $cmd_pid
-    wait $cmd_pid
+    # NOTA: Redirigimos stderr a stdout para capturar errores de sed, pero la salida principal sigue oculta
+    local output=$(eval "$cmd" 2>&1)
     local exit_status=$?
+
+    # Mostrar la animación
+    local pid=$!
+    spinner $pid
+    wait $pid
     
     # Si el comando falla, registrar el error y salir
     if [ $exit_status -ne 0 ]; then
         show_error "Comando falló: $cmd"
+        show_error "Salida/Error del comando: $output"
         cleanup 1
         exit $exit_status
     fi
@@ -354,12 +358,12 @@ initialize_chatwoot_database() {
     
     container_id=""
     while [ $attempt -lt $max_attempts ]; do
-        # FIX: Buscar el contenedor Redis del stack 'redis' que fue instalado previamente.
-        # El nombre del contenedor es típicamente <stack_name>_<service_name>, es decir, redis_redis-server
+        # FIX: Buscar el contenedor Redis del stack 'redis'
         container_id=$(docker ps --filter "name=redis_redis-server" --format "{{.ID}}")
         
         if [ ! -z "$container_id" ]; then
-             if docker exec -t "$container_id" redis-cli PING >/dev/null 2>&1; then
+             # Usar la contraseña del $COMMON_PASSWORD inyectada en el comando
+             if docker exec -t "$container_id" redis-cli -a "$COMMON_PASSWORD" PING >/dev/null 2>&1; then
                 redis_ready=true
                 show_success "Redis está disponible"
                 break
@@ -404,9 +408,11 @@ sanitize_stack_file() {
     show_message "Sanitizando archivo $tool_name-stack.yml..."
 
     # 1. Reemplazar variables de entorno específicas con la contraseña y clave secreta
+    # Usamos COMMON_PASSWORD directamente para $REDIS_PASSWORD ya que el archivo yaml original no usa la variable de entorno
+    # y la inyectaremos en el paso 3.
     run_command "sed -i 's|N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$SECRET_KEY|g' \"$stack_file\"" "Aplicando SECRET_KEY..."
     run_command "sed -i 's|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a Postgres..."
-    run_command "sed -i 's|REDIS_PASSWORD=.*|REDIS_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a Redis..."
+    run_command "sed -i 's|REDIS_PASSWORD=.*|REDIS_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a Redis (variable en Chatwoot/n8n)..."
     run_command "sed -i 's|DB_POSTGRESDB_PASSWORD=.*|DB_POSTGRESDB_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a n8n/evoapi DB..."
     run_command "sed -i 's|RAILS_INBOUND_EMAIL_PASSWORD=.*|RAILS_INBOUND_EMAIL_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a Chatwoot..."
     run_command "sed -i 's|PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a Portainer..."
@@ -424,19 +430,18 @@ sanitize_stack_file() {
     run_command "sed -i 's/HOST_NAME=.*$/HOST_NAME=$full_domain/g' \"$stack_file\"" "Aplicando HOST_NAME a Chatwoot..."
     run_command "sed -i 's/APP_DOMAIN=.*$/APP_DOMAIN=$full_domain/g' \"$stack_file\"" "Aplicando APP_DOMAIN a Chatwoot..."
 
-    # 3. FIXES ADICIONALES para Redis (Añadir autenticación si no existe)
+    # 3. FIX ROBUSTO para Redis (Añadir autenticación para evitar el error de deploy)
     if [ "$tool_name" = "redis" ]; then
-        # Asegurarse de que el comando de Redis tenga --requirepass
-        if ! grep -q 'redis-server --requirepass' "$stack_file"; then
-             run_command "sed -i '/command: redis-server --loglevel warning/c\    command: redis-server --requirepass \$$REDIS_PASSWORD --loglevel warning' \"$stack_file\"" \
-                "Añadiendo autenticación de contraseña a Redis Server..."
-        fi
         
-        # Asegurarse de que RedisInsight tenga la variable de entorno
-        if ! grep -q 'REDISINSIGHT_PASSWORD' "$stack_file"; then
-             run_command "sed -i '/image: redislabs\/redisinsight:latest/a\        environment:\n          - REDISINSIGHT_PASSWORD=\$$REDIS_PASSWORD' \"$stack_file\"" \
-                "Añadiendo variable REDISINSIGHT_PASSWORD..."
-        fi
+        # a. Inyectar la contraseña en el COMANDO del redis-server
+        # Reemplazar 'command: redis-server --loglevel warning' por la versión con requirepass
+        run_command "sed -i '/command: redis-server --loglevel warning/s/--loglevel warning/--requirepass $COMMON_PASSWORD --loglevel warning/g' \"$stack_file\"" \
+            "Añadiendo autenticación (requirepass) a Redis Server Command..."
+            
+        # b. Inyectar las VARIABLES DE ENTORNO para RedisInsight (conexión y seguridad)
+        # Buscamos la línea de la imagen de redisinsight e inyectamos el bloque 'environment'
+        run_command "sed -i '/image: redislabs\/redisinsight:latest/a\        environment:\n          - REDISINSIGHT_PASSWORD=$COMMON_PASSWORD\n          - REDIS_PASSWORD=$COMMON_PASSWORD' \"$stack_file\"" \
+            "Inyectando environment variables para RedisInsight..."
     fi
     
     show_success "Archivo $tool_name-stack.yml sanitizado correctamente"
@@ -475,6 +480,8 @@ install_docker_tool() {
 
     # 6. Post-despliegue (solo para Chatwoot)
     if [ "$tool_name" == "chatwoot" ]; then
+        # Pasar la contraseña a la función de inicialización
+        COMMON_PASSWORD=$(grep '^COMMON_PASSWORD=' $DOCKER_DIR/.env.global | cut -d'=' -f2)
         initialize_chatwoot_database "$subdomain"
     fi
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# UNIFIED INSTALLER SCRIPT (v3.0.7 - DEBUG & REINTENTO)
-# ¡Script independiente, sin API ni Tokens de instalación!
+# UNIFIED INSTALLER SCRIPT (v3.0.8 - DEBUG SIN LIMPIEZA)
+# NO limpia el stack de inicialización en caso de fallo para permitir diagnóstico.
 # =================================================================================
 
-SCRIPT_VERSION="3.0.7-INDEPENDIENTE"
+SCRIPT_VERSION="3.0.8-NO-CLEANUP"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -21,7 +21,6 @@ DOWNLOAD_TIMEOUT=30
 
 # -----------------------------------------------
 # Configuracion de URLs para descarga de Stacks
-# ¡Descarga directa desde GitHub!
 # -----------------------------------------------
 declare -gA STACK_URLS=(
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
@@ -101,7 +100,7 @@ run_command() {
     if [ $exit_status -ne 0 ]; then
         show_error "Comando falló. Revise el error a continuación."
         show_error "Salida/Error del comando: $output"
-        cleanup 1
+        # ¡IMPORTANTE! No llamar a cleanup aquí para mantener los logs.
         exit $exit_status
     fi
     
@@ -109,7 +108,7 @@ run_command() {
 }
 
 # -----------------------------------------------
-# FUNCIONES DE UTILIDAD
+# FUNCIONES DE UTILIDAD (MODIFICADA: NO ELIMINA STACKS EN FALLO)
 # -----------------------------------------------
 
 cleanup() {
@@ -121,6 +120,7 @@ cleanup() {
     if [ $exit_code -ne 0 ]; then
         echo -e "${RED}[ERROR]${NC} Error detectado. Limpiando archivos temporales..."
         
+        # Eliminar archivos temporales (no stacks)
         if [ ${#TEMP_FILES[@]} -gt 0 ]; then
             for file in "${TEMP_FILES[@]}"; do
                 if [ -f "$file" ]; then
@@ -128,8 +128,15 @@ cleanup() {
                 fi
             done
         fi
+        
+        # *** MENSAJE DE DEBUG CLAVE ***
+        show_error "El stack de inicialización 'chatwoot-init' y sus logs **NO HAN SIDO ELIMINADOS**."
+        show_error "Diagnostique ejecutando: docker service logs chatwoot-init_db-init"
+        # ******************************
+
     fi
     
+    # ... (Resto de la limpieza/autodestrucción del script) ...
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
         
         local self_destruct_script="/tmp/self_destruct_$$_$(date +%s).sh"
@@ -156,7 +163,9 @@ EOF
     fi
 }
 
+# Configurar trampas para señales para limpiar antes de salir
 trap 'cleanup 1 false; exit 1' SIGHUP SIGINT SIGQUIT SIGTERM ERR
+
 
 register_temp_file() {
     local file_path=$1
@@ -192,6 +201,7 @@ generate_random_key() {
     tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32
 }
 
+# (Las funciones de instalación de dependencias, Swarm, redes y directorios se mantienen igual)
 configure_docker_logs() {
     local config_file="/etc/docker/daemon.json"
     show_message "Configurando límites de logs en Docker..."
@@ -251,7 +261,7 @@ initialize_docker_swarm() {
             show_success "Docker Swarm inicializado correctamente"
         else
             show_error "Error al inicializar Docker Swarm"
-            cleanup 1
+            # No llamar a cleanup aquí
             exit 1
         fi
     else
@@ -321,14 +331,13 @@ create_volume_directories() {
         run_command "mkdir -p \"$path\"" "Creando directorio $path..."
         if [ $? -ne 0 ]; then
              show_error "Error al crear el directorio $path"
-             cleanup 1
+             # No llamar a cleanup aquí
              exit 1
         fi
     done
 }
 
-
-# Función para inicializar la base de datos de Chatwoot (Lógica de diagnóstico mejorada)
+# Función para inicializar la base de datos de Chatwoot (Mantiene el stack si falla el timeout)
 initialize_chatwoot_database() {
     local tool_name="chatwoot"
     local subdomain=$1
@@ -379,22 +388,21 @@ EOF
         
         if [[ "$init_task_status" == *"Shutdown"* ]]; then
             show_success "Inicialización de base de datos completada exitosamente"
-            break
+            run_command "docker stack rm ${tool_name}-init" "Limpiando stack de inicialización..."
+            show_success "Base de datos de Chatwoot inicializada correctamente"
+            return 0
         fi
         
         if [ $i -eq $max_wait ]; then
-            show_error "Timeout: El servicio de inicialización de Chatwoot no finalizó después de 15 minutos. **Esto indica un fallo grave de recursos o conexión (Postgres/Redis).**"
-            show_error "**Para diagnosticar, ejecute:** docker service logs ${tool_name}-init_db-init"
-            run_command "docker stack rm ${tool_name}-init" "Limpiando stack de inicialización fallido..."
-            cleanup 1
-            exit 1
+            show_error "Timeout: El servicio de inicialización de Chatwoot no finalizó después de 15 minutos."
+            show_error "**¡IMPORTANTE!** El stack **${tool_name}-init** NO FUE ELIMINADO."
+            show_error "**Diagnostique ejecutando:** docker service logs ${tool_name}-init_db-init"
+            
+            # NO ELIMINAMOS EL STACK, SOLO SALIMOS DEL SCRIPT
+            exit 1 
         fi
         sleep 1
     done
-
-    run_command "docker stack rm ${tool_name}-init" "Limpiando stack de inicialización..."
-    
-    show_success "Base de datos de Chatwoot inicializada correctamente"
 }
 
 
@@ -440,12 +448,9 @@ install_tool() {
     # Manejo de casos especiales
     if [ "$tool_name" == "redis" ]; then
         show_message "Aplicando corrección de sintaxis y contraseña para Redis..."
-        # Añade la contraseña en el comando de inicio de redis-server
         sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass $COMMON_PASSWORD --loglevel warning/g" "$stack_file"
         
-        # Inyecta la contraseña para RedisInsight
         sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD=\$COMMON_PASSWORD\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$stack_file"
-        
         show_success "Corrección de Redis aplicada."
     fi
 
@@ -465,21 +470,17 @@ install_tool() {
         return 0
     else
         show_error "Fallo al desplegar $tool_name"
-        cleanup 1
+        # No llamar a cleanup aquí
         exit 1
     fi
 }
 
-# =================================================================
-# LÓGICA DE EJECUCIÓN
-# =================================================================
-
+# (Las funciones get_credentials, select_tools_and_subdomains y finalize_installation se mantienen igual)
 get_credentials() {
     show_message "--- CREDENCIALES GLOBALES ---"
     
     if [ -f "$DOCKER_DIR/.env.global" ]; then
         show_message "Credenciales globales encontradas. Usando configuración anterior."
-        # Fuente para cargar las credenciales
         source "$DOCKER_DIR/.env.global"
         
         local temp_password=""
@@ -607,7 +608,7 @@ select_tools_and_subdomains() {
         
         if [ ${#SELECTED_TOOLS[@]} -eq 0 ]; then
             show_error "No se seleccionó ninguna herramienta válida. Saliendo."
-            cleanup 1
+            # No llamar a cleanup aquí
             exit 1
         fi
     fi
@@ -626,7 +627,6 @@ select_tools_and_subdomains() {
     done
     echo 
 }
-
 
 main_installation_flow() {
     if [ "$EUID" -ne 0 ]; then
@@ -656,10 +656,13 @@ main_installation_flow() {
         fi
         
         if [ "$tool_name" == "chatwoot" ]; then
-            # Esperamos a que el stack principal esté corriendo antes de intentar inicializar la DB
              show_message "Esperando 30 segundos para que el stack principal de Chatwoot se estabilice antes de la inicialización..."
              sleep 30 
              initialize_chatwoot_database "$subdomain" 
+             # El control de salida se maneja dentro de initialize_chatwoot_database
+             if [ $? -ne 0 ]; then
+                 exit 1 # Sale si initialize_chatwoot_database devuelve un error (timeout)
+             fi
         fi
     done
 
@@ -680,7 +683,7 @@ finalize_installation() {
             if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
                 tool_index=$j
                 break
-            fi
+            }
         done
 
         if [ $tool_index -ge 0 ]; then
@@ -703,6 +706,7 @@ finalize_installation() {
     
     rm -f "$DOCKER_DIR/.selection.cfg"
 
+    # La limpieza final se mantiene para eliminar archivos temporales y autodestruir el script.
     cleanup 0 true 
 }
 

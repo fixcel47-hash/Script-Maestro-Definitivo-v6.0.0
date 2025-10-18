@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# UNIFIED INSTALLER SCRIPT (v3.0.4 - MODO VISIBILIDAD COMPLETA)
-# Muestra el progreso de cada comando para total transparencia.
+# UNIFIED INSTALLER SCRIPT (v3.0.6 - FIX CHATWOOT TIMEOUT)
+# Aumenta el tiempo de espera de la inicialización de Chatwoot a 15 minutos.
 # =================================================================================
 
-SCRIPT_VERSION="3.0.4-FULL-VISIBILITY"
+SCRIPT_VERSION="3.0.6-TIMEOUT-FIX"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -43,7 +43,7 @@ declare -gA INSTALLED_COMPONENTS=(
 # Lista de herramientas disponibles y subdominios predeterminados
 AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "postgres" "n8" "evoapi" "chat")
-SELECTED_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
+SELECTED_TOOLS=()
 CUSTOM_SUBDOMAINS=()
 
 
@@ -88,23 +88,19 @@ run_command() {
     
     show_message "$msg"
     
-    # Crea un archivo temporal para capturar la salida
     local temp_output=$(mktemp)
     
-    # Ejecutar en segundo plano
+    # Ejecutar en segundo plano, imprimiendo salida al mismo tiempo
     (eval "$cmd" 2>&1 | tee "$temp_output") &
     local cmd_pid=$!
     
-    # Mostrar el spinner mientras el comando se ejecuta
     spinner $cmd_pid
     wait $cmd_pid
     local exit_status=$?
     
-    # Capturar la salida final (por si el spinner la interrumpió visualmente)
     local output=$(cat "$temp_output")
     rm -f "$temp_output"
     
-    # Si el comando falla, registrar el error y salir
     if [ $exit_status -ne 0 ]; then
         show_error "Comando falló. Revise el error a continuación."
         show_error "Salida/Error del comando: $output"
@@ -138,7 +134,6 @@ cleanup() {
         fi
     fi
     
-    # Si se solicita, eliminar solo los archivos stack.yml (en caso de éxito)
     if [ "$delete_stacks" = true ]; then
         for tool_name in "${SELECTED_TOOLS[@]}"; do
             local stack_file="$DOCKER_DIR/$tool_name/$tool_name-stack.yml"
@@ -148,7 +143,6 @@ cleanup() {
         done
     fi
     
-    # Autodestrucción del script
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
         
         local self_destruct_script="/tmp/self_destruct_$$_$(date +%s).sh"
@@ -168,7 +162,6 @@ EOF
     
     echo -e "${BLUE}[INFO]${NC} Limpieza completada"
     
-    # Mostrar mensaje final de error/éxito
     if [ $exit_code -ne 0 ]; then
         echo -e "${RED}[ERROR]${NC} La instalación ha fallado. Revise los logs para más información."
     else
@@ -186,7 +179,7 @@ register_temp_file() {
 }
 
 
-# Función para descargar archivos directamente desde el URL
+# Función para descargar archivos
 download_stack_file() {
     local tool_name=$1
     local local_path=$2
@@ -200,7 +193,6 @@ download_stack_file() {
     
     show_message "Descargando stack '$tool_name' desde GitHub..."
     
-    # Usar `curl` sin el spinner para mostrar la barra de progreso de descarga si es posible.
     if ! curl -fsSL --progress-bar --max-time $DOWNLOAD_TIMEOUT -o "$local_path" "$download_url"; then
         show_error "Error al descargar el archivo stack para $tool_name desde $download_url"
         cleanup 1
@@ -367,7 +359,6 @@ initialize_chatwoot_database() {
     
     show_message "Inicializando base de datos de Chatwoot..."
     
-    # 1. Crear el stack de inicialización (temporal)
     local init_stack_file="$DOCKER_DIR/$tool_name/$tool_name-init-stack.yml"
     cat > "$init_stack_file" <<EOF
 version: '3.7'
@@ -396,14 +387,12 @@ networks:
 EOF
     register_temp_file "$init_stack_file"
 
-    # 2. Desplegar el stack temporal de inicialización
     run_command "docker stack deploy -c $init_stack_file ${tool_name}-init" "Desplegando stack de inicialización de base de datos..."
 
-    # 3. Esperar a que el servicio de inicialización termine
-    show_message "Esperando a que la inicialización de la base de datos termine (puede tardar varios minutos)..."
+    show_message "Esperando a que la inicialización de la base de datos termine (¡Aumentado a 15 minutos!)..."
     local init_service_id="${tool_name}-init_db-init"
     local init_task_status=""
-    local max_wait=300 # 5 minutos
+    local max_wait=900 # Aumentado a 15 minutos (900 segundos)
 
     for i in $(seq 1 $max_wait); do
         init_task_status=$(docker service ps -f "desired-state=shutdown" -f "name=${init_service_id}" --format "{{.CurrentState}}" ${tool_name}-init 2>/dev/null | head -n 1)
@@ -413,7 +402,7 @@ EOF
             break
         fi
         if [ $i -eq $max_wait ]; then
-            show_error "Timeout: El servicio de inicialización de Chatwoot no finalizó después de 5 minutos."
+            show_error "Timeout: El servicio de inicialización de Chatwoot no finalizó después de 15 minutos. Revise los logs del servicio."
             run_command "docker stack rm ${tool_name}-init" "Limpiando stack de inicialización fallido..."
             cleanup 1
             exit 1
@@ -421,7 +410,6 @@ EOF
         sleep 1
     done
 
-    # 4. Limpiar el stack de inicialización
     run_command "docker stack rm ${tool_name}-init" "Limpiando stack de inicialización..."
     
     show_success "Base de datos de Chatwoot inicializada correctamente"
@@ -437,13 +425,18 @@ install_tool() {
     
     show_message "Preparando instalación de $tool_name con subdominio: $subdomain.$BASE_DOMAIN"
 
+    # Verificar si el stack ya existe y si es el caso, saltar
+    if docker stack ls 2>/dev/null | grep -q "$tool_name"; then
+        show_warning "El stack '$tool_name' ya está desplegado. Omitiendo la descarga e instalación."
+        echo "$subdomain" > "$DOCKER_DIR/$tool_name/.subdomain" # Asegurar que el subdominio esté guardado
+        return 0
+    fi
+    
     mkdir -p "$stack_dir"
     download_stack_file "$tool_name" "$stack_file"
 
-    # Crear directorios para volúmenes
     create_volume_directories "$stack_file" "$tool_name"
 
-    # Sanitización general de variables de Traefik y Secrets
     local full_domain="$subdomain.$BASE_DOMAIN"
 
     show_message "Aplicando sanitización de variables..."
@@ -468,10 +461,8 @@ install_tool() {
     if [ "$tool_name" == "redis" ]; then
         show_message "Aplicando corrección de sintaxis y contraseña para Redis..."
 
-        # CORRECCIÓN 1: Agregar la contraseña al comando de redis-server
         sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass $COMMON_PASSWORD --loglevel warning/g" "$stack_file"
 
-        # CORRECCIÓN 2: Inyectar variables de entorno en redisinsight con la INDENTACIÓN CORRECTA
         sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD=\$COMMON_PASSWORD\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$stack_file"
         
         show_success "Corrección de Redis aplicada."
@@ -479,7 +470,6 @@ install_tool() {
 
     if [ "$tool_name" == "n8n" ]; then
         show_message "Ajustando subdominios de webhook para n8n..."
-        # Reemplaza la URL de webhook para que apunte al subdominio del stack
         sed -i "s/WEBHOOK_URL=https:\/\/webhook\..*$/WEBHOOK_URL=https:\/\/webhook.$full_domain/g" "$stack_file"
         sed -i "s/REPLACE_WEBHOOK_SUBDOMAIN/webhook.$subdomain/g" "$stack_file"
         show_success "Ajuste de n8n aplicado."
@@ -505,39 +495,159 @@ install_tool() {
 # =================================================================
 
 get_credentials() {
-    show_message "Configuración inicial"
+    show_message "--- CREDENCIALES GLOBALES ---"
     
-    # 1. Contraseña (USANDO -s Y -p PARA MODO SILENCIOSO Y PROMPT)
-    while [ -z "$COMMON_PASSWORD" ]; do
-        # Oculta la entrada (modo seguro)
-        read -rsp "Ingrese la contraseña común para todas las herramientas: " COMMON_PASSWORD
+    # Intentar cargar credenciales previamente guardadas
+    if [ -f "$DOCKER_DIR/.env.global" ]; then
+        show_message "Credenciales globales encontradas. Usando configuración anterior."
+        source "$DOCKER_DIR/.env.global"
+        show_success "Dominio: $BASE_DOMAIN | Contraseña: *** | Clave Secreta: ***"
+        
+        # Necesitamos pedir la confirmación de la contraseña para evitar que sea vacía si el archivo falla
+        local temp_password=""
+        read -rsp "Confirme la contraseña común para continuar: " temp_password
         echo
-        if [ -z "$COMMON_PASSWORD" ]; then
-            show_error "La contraseña no puede estar vacía."
+        if [ "$temp_password" != "$COMMON_PASSWORD" ]; then
+            show_error "Contraseña no coincide. Reiniciando la entrada de credenciales."
+            COMMON_PASSWORD=""
+            BASE_DOMAIN=""
+            SECRET_KEY=""
+            get_credentials
+            return
         fi
-    done
+        
+    else
+        # 1. Contraseña (Mantiene MODO SILENCIOSO por seguridad)
+        while [ -z "$COMMON_PASSWORD" ]; do
+            read -rsp "Ingrese la contraseña común para todas las herramientas: " COMMON_PASSWORD
+            echo
+            if [ -z "$COMMON_PASSWORD" ]; then
+                show_error "La contraseña no puede estar vacía."
+            fi
+        done
 
-    # 2. Dominio
-    while [ -z "$BASE_DOMAIN" ]; do
-        read -rp "Ingrese el dominio base (ejemplo: midominio.com): " BASE_DOMAIN
-        if [ -z "$BASE_DOMAIN" ]; then
-            show_error "El dominio no puede estar vacío."
+        # 2. Dominio
+        while [ -z "$BASE_DOMAIN" ]; do
+            read -rp "Ingrese el dominio base (ejemplo: midominio.com): " BASE_DOMAIN
+            if [ -z "$BASE_DOMAIN" ]; then
+                show_error "El dominio no puede estar vacío."
+            fi
+            BASE_DOMAIN=$(echo "$BASE_DOMAIN" | sed 's|^https\?://||')
+        done
+
+        # 3. Clave Secreta
+        read -rp "Ingrese una clave secreta de 32 caracteres (o presione Enter para generar una): " SECRET_KEY
+        if [ -z "$SECRET_KEY" ]; then
+            SECRET_KEY=$(generate_random_key)
+            show_message "Se utilizará la siguiente clave secreta generada: $SECRET_KEY"
         fi
-        BASE_DOMAIN=$(echo "$BASE_DOMAIN" | sed 's|^https\?://||')
-    done
+        
+        show_message "Guardando credenciales en $DOCKER_DIR/.env.global..."
+        mkdir -p "$DOCKER_DIR"
+        echo "BASE_DOMAIN=$BASE_DOMAIN" > "$DOCKER_DIR/.env.global"
+        echo "COMMON_PASSWORD=$COMMON_PASSWORD" >> "$DOCKER_DIR/.env.global"
+        echo "SECRET_KEY=$SECRET_KEY" >> "$DOCKER_DIR/.env.global"
+    fi
+}
 
-    # 3. Clave Secreta
-    read -rp "Ingrese una clave secreta de 32 caracteres (o presione Enter para generar una): " SECRET_KEY
-    if [ -z "$SECRET_KEY" ]; then
-        SECRET_KEY=$(generate_random_key)
-        show_message "Se utilizará la siguiente clave secreta generada: $SECRET_KEY"
+select_tools_and_subdomains() {
+    show_message "--- CONFIGURACIÓN DE HERRAMIENTAS Y SUBDOMINIOS ---"
+    
+    # Intentar cargar selección anterior
+    if [ -f "$DOCKER_DIR/.selection.cfg" ]; then
+        show_message "Configuración de herramientas anterior encontrada. Usando la misma selección."
+        local saved_data=$(cat "$DOCKER_DIR/.selection.cfg")
+        
+        # Parsear las herramientas y subdominios
+        IFS=$'\n' read -r -d '' -a lines <<< "$saved_data"
+        for line in "${lines[@]}"; do
+            tool=$(echo "$line" | awk -F'=' '{print $1}')
+            subdomain=$(echo "$line" | awk -F'=' '{print $2}')
+            SELECTED_TOOLS+=("$tool")
+            CUSTOM_SUBDOMAINS+=("$subdomain")
+        done
+
+        show_success "Se reanuda la instalación con ${#SELECTED_TOOLS[@]} herramientas."
+        return
     fi
     
-    show_message "Guardando credenciales en $DOCKER_DIR/.env.global..."
+    # Si no hay configuración previa, pedir al usuario
+    SELECTED_TOOLS=()
+    CUSTOM_SUBDOMAINS=()
+
+    show_message "Seleccione las herramientas a instalar (deje vacío para instalar TODAS, o ingrese los números separados por espacio, ej: 1 3 5):"
+    
+    local tool_options=""
+    for i in "${!AVAILABLE_TOOLS[@]}"; do
+        tool_options+="$((i+1))) ${AVAILABLE_TOOLS[$i]^} (Predeterminado: ${DEFAULT_SUBDOMAINS[$i]}.$BASE_DOMAIN)\n"
+    done
+    
+    echo -e "$tool_options"
+    read -rp "Selección [1-7 o dejar vacío para TODO]: " selection
+
+    if [ -z "$selection" ]; then
+        SELECTED_TOOLS=("${AVAILABLE_TOOLS[@]}")
+        
+        show_message "Se instalarán TODAS las herramientas. Configure los subdominios a continuación."
+        
+        for i in "${!SELECTED_TOOLS[@]}"; do
+            local tool_name="${SELECTED_TOOLS[$i]}"
+            local default_subdomain="${DEFAULT_SUBDOMAINS[$i]}"
+            
+            local custom_sub=""
+            read -rp "   -> Subdominio para ${tool_name^} (Enter para usar '$default_subdomain'): " custom_sub
+            
+            if [ -z "$custom_sub" ]; then
+                CUSTOM_SUBDOMAINS+=("$default_subdomain")
+            else
+                CUSTOM_SUBDOMAINS+=("$custom_sub")
+            fi
+        done
+    else
+        local selected_indices=($(echo "$selection" | tr ' ' '\n' | sort -n | uniq))
+        
+        for index in "${selected_indices[@]}"; do
+            local array_index=$((index-1))
+            if [ "$array_index" -ge 0 ] && [ "$array_index" -lt "${#AVAILABLE_TOOLS[@]}" ]; then
+                local tool_name="${AVAILABLE_TOOLS[$array_index]}"
+                local default_subdomain="${DEFAULT_SUBDOMAINS[$array_index]}"
+                
+                SELECTED_TOOLS+=("$tool_name")
+                
+                local custom_sub=""
+                read -rp "   -> Subdominio para ${tool_name^} (Enter para usar '$default_subdomain'): " custom_sub
+                
+                if [ -z "$custom_sub" ]; then
+                    CUSTOM_SUBDOMAINS+=("$default_subdomain")
+                else
+                    CUSTOM_SUBDOMAINS+=("$custom_sub")
+                fi
+            else
+                show_warning "Opción inválida: $index será ignorada."
+            fi
+        done
+        
+        if [ ${#SELECTED_TOOLS[@]} -eq 0 ]; then
+            show_error "No se seleccionó ninguna herramienta válida. Saliendo."
+            cleanup 1
+            exit 1
+        fi
+    fi
+
+    # Guardar la selección para futuras reanudaciones
     mkdir -p "$DOCKER_DIR"
-    echo "BASE_DOMAIN=$BASE_DOMAIN" > "$DOCKER_DIR/.env.global"
-    echo "COMMON_PASSWORD=$COMMON_PASSWORD" >> "$DOCKER_DIR/.env.global"
-    echo "SECRET_KEY=$SECRET_KEY" >> "$DOCKER_DIR/.env.global"
+    local selection_file="$DOCKER_DIR/.selection.cfg"
+    rm -f "$selection_file" # Limpiar la anterior
+    for i in "${!SELECTED_TOOLS[@]}"; do
+        echo "${SELECTED_TOOLS[$i]}=${CUSTOM_SUBDOMAINS[$i]}" >> "$selection_file"
+    done
+
+    echo # New line for clean separation
+    show_message "¡Listo! Se instalarán las siguientes herramientas en su dominio: ${BASE_DOMAIN}"
+    for i in "${!SELECTED_TOOLS[@]}"; do
+        echo -e "   - ${SELECTED_TOOLS[$i]^}: https://${CUSTOM_SUBDOMAINS[$i]}.$BASE_DOMAIN"
+    done
+    echo # New line
 }
 
 
@@ -548,20 +658,22 @@ main_installation_flow() {
     fi
     
     get_credentials
+    select_tools_and_subdomains 
+    
     show_message "Iniciando la instalación automatizada de herramientas Docker..."
     
-    # 1. Dependencias y entorno
+    # 1. Dependencias y entorno (Se mantienen, pero se saltan si ya están)
     install_dependencies
     initialize_docker_swarm
     create_docker_networks
-    install_server_tools # Firewall y seguridad
+    install_server_tools 
     
     # 2. Instalación de herramientas (Bucle principal)
     for i in "${!SELECTED_TOOLS[@]}"; do
         tool_name="${SELECTED_TOOLS[$i]}"
-        default_subdomain="${DEFAULT_SUBDOMAINS[$i]}"
+        subdomain="${CUSTOM_SUBDOMAINS[$i]}" 
         
-        install_tool "$tool_name" "$default_subdomain"
+        install_tool "$tool_name" "$subdomain"
         
         # Esperar un tiempo prudente para bases de datos antes de usarlas
         if [ "$tool_name" = "postgres" ] || [ "$tool_name" = "redis" ]; then
@@ -569,11 +681,17 @@ main_installation_flow() {
             sleep 15
         fi
         
-        # Post-instalación
+        # Post-instalación (Solo si el stack se instaló/desplegó, lo cual verifica install_tool)
         if [ "$tool_name" == "chatwoot" ]; then
-            show_message "Esperando 30 segundos para que el stack de Chatwoot se estabilice antes de la inicialización..."
-            sleep 30 
-            initialize_chatwoot_database "$default_subdomain" 
+            # Necesitamos asegurar que el stack de chatwoot esté ejecutándose antes de la inicialización
+            if docker stack ps chatwoot 2>/dev/null | grep -q "Running"; then
+                 show_message "Esperando 30 segundos para que el stack de Chatwoot se estabilice antes de la inicialización..."
+                 sleep 30 
+                 initialize_chatwoot_database "$subdomain" 
+            else
+                 show_warning "El servicio principal de Chatwoot no está en ejecución. Intentando inicialización de todas formas."
+                 initialize_chatwoot_database "$subdomain" 
+            fi
         fi
     done
 
@@ -603,7 +721,7 @@ finalize_installation() {
             if [ -f "$subdomain_file" ]; then
                 subdomain=$(cat "$subdomain_file")
             else
-                subdomain="${DEFAULT_SUBDOMAINS[$tool_index]}"
+                subdomain="${CUSTOM_SUBDOMAINS[$i]}"
             fi
 
             echo "- ${tool_name^}: https://$subdomain.$BASE_DOMAIN"

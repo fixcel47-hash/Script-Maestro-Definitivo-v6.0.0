@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# UNIFIED INSTALLER SCRIPT (v3.0.0 - Final)
-# Ahora es un script UNIFICADO que contiene toda la lógica de instalación y ya no
-# depende de la descarga del "installer.sh" desde una API.
+# UNIFIED INSTALLER SCRIPT (v3.0.1 - FIX Redis Check)
+# ¡Script independiente sin API ni tokens!
 # =================================================================================
 
-SCRIPT_VERSION="3.0.0-FINAL"
+SCRIPT_VERSION="3.0.1-FIX"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -41,14 +40,14 @@ declare -gA INSTALLED_COMPONENTS=(
     [networks]=false
 )
 
-# Lista de herramientas disponibles
+# Lista de herramientas disponibles y subdominios predeterminados
 AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "postgres" "n8" "evoapi" "chat")
 SELECTED_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 CUSTOM_SUBDOMAINS=()
 
 
-# Función para mostrar mensajes
+# Funciones de utilidad para mensajes
 show_message() { echo -e "${BLUE}[INFO]${NC} $1"; }
 show_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
@@ -78,6 +77,7 @@ run_command() {
     local msg=$2
     
     show_message "$msg"
+    # Ejecutar en subshell para capturar el PID y redirigir la salida
     eval "$cmd" > /dev/null 2>&1 &
     local cmd_pid=$!
     spinner $cmd_pid
@@ -97,12 +97,12 @@ run_command() {
 # Función de limpieza (incluye autodestrucción del script)
 cleanup() {
     local exit_code=$1
-    local delete_stacks=${2:-false}  # Segundo parámetro opcional, por defecto false
+    local delete_stacks=${2:-false}
     
     echo -e "${BLUE}[INFO]${NC} Realizando limpieza antes de salir..."
     
     if [ $exit_code -ne 0 ]; then
-        echo -e "${RED}[ERROR]${NC} Error detectado durante la instalación. Limpiando archivos temporales..."
+        echo -e "${RED}[ERROR]${NC} Error detectado. Limpiando archivos temporales..."
         
         # Eliminar archivos temporales en caso de error
         if [ ${#TEMP_FILES[@]} -gt 0 ]; then
@@ -124,30 +124,21 @@ cleanup() {
         done
     fi
     
-    # Autodestrucción del script unificado (setup.sh)
+    # Autodestrucción del script
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
         
-        # Crear un script separado para la autodestrucción
         local self_destruct_script="/tmp/self_destruct_$$_$(date +%s).sh"
         cat > "$self_destruct_script" << EOF
 #!/bin/bash
-# Esperar un momento para asegurar que el script principal ha terminado
 sleep 1
-# Intentar eliminar el script principal
 rm -f "$SCRIPT_PATH"
-# Comprobar si se eliminó correctamente
 if [ -f "$SCRIPT_PATH" ]; then
-  # Si no se pudo eliminar, intentar una vez más con sudo
   sudo rm -f "$SCRIPT_PATH"
 fi
-# Eliminar este script de autodestrucción
 rm -f "\$0"
 EOF
 
-        # Hacer ejecutable el script de autodestrucción
         chmod +x "$self_destruct_script"
-        
-        # Ejecutar el script de autodestrucción en segundo plano
         nohup "$self_destruct_script" >/dev/null 2>&1 &
     fi
     
@@ -164,7 +155,7 @@ EOF
 # Configurar trampas para señales para limpiar antes de salir
 trap 'cleanup 1 false; exit 1' SIGHUP SIGINT SIGQUIT SIGTERM ERR
 
-# Función para registrar un archivo temporal para limpieza posterior
+# Función para registrar un archivo temporal
 register_temp_file() {
     local file_path=$1
     TEMP_FILES+=("$file_path")
@@ -185,14 +176,12 @@ download_stack_file() {
     
     show_message "Descargando stack '$tool_name' desde GitHub..."
     
-    # Usar curl para descargar de forma silenciosa, seguir redirecciones y guardar el archivo
     if ! curl -fsSL --max-time $DOWNLOAD_TIMEOUT -o "$local_path" "$download_url"; then
         show_error "Error al descargar el archivo stack para $tool_name desde $download_url"
         cleanup 1
         exit 1
     fi
     
-    # Registrar el archivo como temporal
     register_temp_file "$local_path"
     show_success "Archivo stack para $tool_name descargado correctamente"
     return 0
@@ -206,9 +195,7 @@ generate_random_key() {
 # Función para configurar tamaño de los logs de Docker
 configure_docker_logs() {
     local config_file="/etc/docker/daemon.json"
-
     show_message "Configurando límites de logs en Docker..."
-
     cat > "$config_file" <<EOF
 {
   "log-driver": "json-file",
@@ -218,29 +205,24 @@ configure_docker_logs() {
   }
 }
 EOF
-
     run_command "systemctl restart docker" "Reiniciando Docker para aplicar configuración..."
 }
 
 # Función para configurar rkhunter
 configure_rkhunter() {
     local config_file="/etc/rkhunter.conf"
-
     show_message "Configurando RKHunter..."
-
     run_command "sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && \
                 sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && \
                 sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" \
                 "Aplicando configuración de RKHunter..."
 }
 
-# Verificar e instalar dependencias
+# Instalar dependencias
 install_dependencies() {
     show_message "Verificando e instalando dependencias..."
-    
     apt-get update
 
-    # Verificar si Docker está instalado
     if ! command -v docker &> /dev/null; then
         show_message "Instalando Docker..."
         apt-get install -y ca-certificates curl
@@ -255,15 +237,13 @@ sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
         apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
         systemctl enable docker
         systemctl start docker
-
         configure_docker_logs
     fi
     
-    # Instalar otras herramientas necesarias
     apt-get install -y git curl wget
 }
 
-# Inicializar Docker Swarm si no está activo
+# Inicializar Docker Swarm
 initialize_docker_swarm() {
     show_message "Verificando estado de Docker Swarm..."
     
@@ -284,17 +264,15 @@ initialize_docker_swarm() {
     INSTALLED_COMPONENTS["dependencies"]=true
 }
 
-# Instalar herramientas directamente en el servidor
+# Instalar herramientas de seguridad
 install_server_tools() {
     show_message "Instalando herramientas de seguridad en el servidor..."
     
-    # Fail2Ban
     show_message "Instalando Fail2Ban..."
     apt-get install -y fail2ban
     systemctl enable fail2ban
     systemctl start fail2ban
     
-    # RKHunter
     show_message "Instalando RKHunter..."
     echo "postfix postfix/main_mailer_type select No configuration" | debconf-set-selections
     apt-get install -y rkhunter
@@ -302,11 +280,9 @@ install_server_tools() {
     rkhunter --update
     rkhunter --propupd
     
-    # CHKRootkit
     show_message "Instalando CHKRootkit..."
     apt-get install -y chkrootkit
 
-    # UFW
     show_message "Configurando UFW Firewall..."
     apt-get install -y ufw
     ufw allow ssh
@@ -356,9 +332,7 @@ create_volume_directories() {
     for path in $volume_paths; do
         show_message "Creando directorio: $path"
         run_command "mkdir -p \"$path\"" "Creando directorio $path..."
-        if [ $? -eq 0 ]; then
-            show_success "Directorio $path creado correctamente"
-        else
+        if [ $? -ne 0 ]; then
             show_error "Error al crear el directorio $path"
             cleanup 1
             exit 1
@@ -378,29 +352,24 @@ initialize_chatwoot_database() {
     local max_attempts=60
     local attempt=0
     
-    container_id=$(docker ps --filter "name=redis-server" --format "{{.ID}}")
-    
+    container_id=""
     while [ $attempt -lt $max_attempts ]; do
-        if [ -z "$container_id" ]; then
-            sleep 5
-            container_id=$(docker ps --filter "name=redis-server" --format "{{.ID}}")
-            attempt=$((attempt + 5))
-            if [ $((attempt % 30)) -eq 0 ]; then
-                show_message "Esperando contenedor Redis... ($attempt/$max_attempts segundos)"
+        # FIX: Buscar el contenedor Redis del stack 'redis' que fue instalado previamente.
+        # El nombre del contenedor es típicamente <stack_name>_<service_name>, es decir, redis_redis-server
+        container_id=$(docker ps --filter "name=redis_redis-server" --format "{{.ID}}")
+        
+        if [ ! -z "$container_id" ]; then
+             if docker exec -t "$container_id" redis-cli PING >/dev/null 2>&1; then
+                redis_ready=true
+                show_success "Redis está disponible"
+                break
             fi
-            continue
-        fi
-
-        if docker exec -t "$container_id" redis-cli PING >/dev/null 2>&1; then
-            redis_ready=true
-            show_success "Redis está disponible"
-            break
         fi
 
         sleep 5
         attempt=$((attempt + 5))
         if [ $((attempt % 30)) -eq 0 ]; then
-            show_message "Esperando conexión a Redis... ($attempt/$max_attempts segundos)"
+            show_message "Esperando contenedor/conexión Redis... ($attempt/$max_attempts segundos)"
         fi
     done
 
@@ -412,7 +381,7 @@ initialize_chatwoot_database() {
     
     show_message "Ejecutando setup inicial de Chatwoot..."
 
-    local chatwoot_web_container=$(docker ps --filter "name=chatwoot-web" --format "{{.ID}}")
+    local chatwoot_web_container=$(docker ps --filter "name=${tool_name}_web" --format "{{.ID}}")
     
     if [ -z "$chatwoot_web_container" ]; then
         show_error "Contenedor 'chatwoot-web' no encontrado. Asegúrese de que el stack se haya desplegado correctamente."
@@ -434,7 +403,7 @@ sanitize_stack_file() {
     
     show_message "Sanitizando archivo $tool_name-stack.yml..."
 
-    # Reemplazar variables de entorno específicas
+    # 1. Reemplazar variables de entorno específicas con la contraseña y clave secreta
     run_command "sed -i 's|N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$SECRET_KEY|g' \"$stack_file\"" "Aplicando SECRET_KEY..."
     run_command "sed -i 's|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a Postgres..."
     run_command "sed -i 's|REDIS_PASSWORD=.*|REDIS_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a Redis..."
@@ -442,7 +411,7 @@ sanitize_stack_file() {
     run_command "sed -i 's|RAILS_INBOUND_EMAIL_PASSWORD=.*|RAILS_INBOUND_EMAIL_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a Chatwoot..."
     run_command "sed -i 's|PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$COMMON_PASSWORD|g' \"$stack_file\"" "Aplicando COMMON_PASSWORD a Portainer..."
     
-    # Reemplazar dominio base y subdominio
+    # 2. Reemplazar dominio base y subdominio
     local full_domain="$subdomain.$BASE_DOMAIN"
     
     # Reemplazar variables de dominio
@@ -454,6 +423,21 @@ sanitize_stack_file() {
     run_command "sed -i 's/CHOOSETRAEFIKDOMAIN=.*$/CHOOSETRAEFIKDOMAIN=$full_domain/g' \"$stack_file\"" "Aplicando CHOOSETRAEFIKDOMAIN..."
     run_command "sed -i 's/HOST_NAME=.*$/HOST_NAME=$full_domain/g' \"$stack_file\"" "Aplicando HOST_NAME a Chatwoot..."
     run_command "sed -i 's/APP_DOMAIN=.*$/APP_DOMAIN=$full_domain/g' \"$stack_file\"" "Aplicando APP_DOMAIN a Chatwoot..."
+
+    # 3. FIXES ADICIONALES para Redis (Añadir autenticación si no existe)
+    if [ "$tool_name" = "redis" ]; then
+        # Asegurarse de que el comando de Redis tenga --requirepass
+        if ! grep -q 'redis-server --requirepass' "$stack_file"; then
+             run_command "sed -i '/command: redis-server --loglevel warning/c\    command: redis-server --requirepass \$$REDIS_PASSWORD --loglevel warning' \"$stack_file\"" \
+                "Añadiendo autenticación de contraseña a Redis Server..."
+        fi
+        
+        # Asegurarse de que RedisInsight tenga la variable de entorno
+        if ! grep -q 'REDISINSIGHT_PASSWORD' "$stack_file"; then
+             run_command "sed -i '/image: redislabs\/redisinsight:latest/a\        environment:\n          - REDISINSIGHT_PASSWORD=\$$REDIS_PASSWORD' \"$stack_file\"" \
+                "Añadiendo variable REDISINSIGHT_PASSWORD..."
+        fi
+    fi
     
     show_success "Archivo $tool_name-stack.yml sanitizado correctamente"
 }
@@ -476,9 +460,8 @@ install_docker_tool() {
     mkdir -p "$tool_dir"
     echo "$subdomain" > "$tool_dir/.subdomain"
 
-    # 2. Descargar el archivo de stack
+    # 2. Descargar el archivo de stack (usa URL directa)
     local stack_file="$tool_dir/$tool_name-stack.yml"
-    
     download_stack_file "$tool_name" "$stack_file"
     
     # 3. Sanitizar el archivo
@@ -499,7 +482,7 @@ install_docker_tool() {
 }
 
 # =========================================================================
-# FLUJO PRINCIPAL DEL SCRIPT UNIFICADO
+# FLUJO PRINCIPAL
 # =========================================================================
 
 echo -e "\n${GREEN}===========================================${NC}"
@@ -512,8 +495,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# 2. Configuración inicial (directorio y variables de usuario)
-DOCKER_DIR="/home/docker"
+# 2. Configuración inicial
 mkdir -p $DOCKER_DIR
 cd $DOCKER_DIR || { 
     show_error "No se pudo acceder al directorio $DOCKER_DIR"
@@ -588,7 +570,6 @@ show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
 echo ""
 echo "Accede a tus servicios en los siguientes URLs:"
 
-# Mostrar URLs de los servicios instalados usando los subdominios personalizados
 for i in "${!SELECTED_TOOLS[@]}"; do
     tool_name="${SELECTED_TOOLS[$i]}"
 
@@ -623,4 +604,4 @@ echo "- Clave secreta: $SECRET_KEY"
 echo ""
 echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"
 
-cleanup 0 true # Eliminar los stacks y el script en caso de éxito
+cleanup 0 true

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =================================================================================
 # UNIFIED INSTALLER SCRIPT (v3.0.8 - DEBUG SIN LIMPIEZA)
-# NO limpia el stack de inicialización en caso de fallo para permitir diagnóstico.
+# Script corregido y modificado para NO limpiar el stack de inicialización 
+# en caso de fallo por Timeout (15 minutos), permitiendo el diagnóstico.
 # =================================================================================
 
 SCRIPT_VERSION="3.0.8-NO-CLEANUP"
@@ -136,7 +137,7 @@ cleanup() {
 
     fi
     
-    # ... (Resto de la limpieza/autodestrucción del script) ...
+    # Autodestrucción del script (deja los stacks fallidos para diagnóstico)
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
         
         local self_destruct_script="/tmp/self_destruct_$$_$(date +%s).sh"
@@ -201,7 +202,6 @@ generate_random_key() {
     tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32
 }
 
-# (Las funciones de instalación de dependencias, Swarm, redes y directorios se mantienen igual)
 configure_docker_logs() {
     local config_file="/etc/docker/daemon.json"
     show_message "Configurando límites de logs en Docker..."
@@ -261,7 +261,6 @@ initialize_docker_swarm() {
             show_success "Docker Swarm inicializado correctamente"
         else
             show_error "Error al inicializar Docker Swarm"
-            # No llamar a cleanup aquí
             exit 1
         fi
     else
@@ -331,7 +330,6 @@ create_volume_directories() {
         run_command "mkdir -p \"$path\"" "Creando directorio $path..."
         if [ $? -ne 0 ]; then
              show_error "Error al crear el directorio $path"
-             # No llamar a cleanup aquí
              exit 1
         fi
     done
@@ -470,12 +468,11 @@ install_tool() {
         return 0
     else
         show_error "Fallo al desplegar $tool_name"
-        # No llamar a cleanup aquí
         exit 1
     fi
 }
 
-# (Las funciones get_credentials, select_tools_and_subdomains y finalize_installation se mantienen igual)
+
 get_credentials() {
     show_message "--- CREDENCIALES GLOBALES ---"
     
@@ -608,7 +605,6 @@ select_tools_and_subdomains() {
         
         if [ ${#SELECTED_TOOLS[@]} -eq 0 ]; then
             show_error "No se seleccionó ninguna herramienta válida. Saliendo."
-            # No llamar a cleanup aquí
             exit 1
         fi
     fi
@@ -627,6 +623,7 @@ select_tools_and_subdomains() {
     done
     echo 
 }
+
 
 main_installation_flow() {
     if [ "$EUID" -ne 0 ]; then
@@ -659,7 +656,6 @@ main_installation_flow() {
              show_message "Esperando 30 segundos para que el stack principal de Chatwoot se estabilice antes de la inicialización..."
              sleep 30 
              initialize_chatwoot_database "$subdomain" 
-             # El control de salida se maneja dentro de initialize_chatwoot_database
              if [ $? -ne 0 ]; then
                  exit 1 # Sale si initialize_chatwoot_database devuelve un error (timeout)
              fi
@@ -683,7 +679,7 @@ finalize_installation() {
             if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
                 tool_index=$j
                 break
-            }
+            fi # <<--- LA CORRECCIÓN DE SINTAXIS ESTÁ AQUÍ
         done
 
         if [ $tool_index -ge 0 ]; then
@@ -706,7 +702,6 @@ finalize_installation() {
     
     rm -f "$DOCKER_DIR/.selection.cfg"
 
-    # La limpieza final se mantiene para eliminar archivos temporales y autodestruir el script.
     cleanup 0 true 
 }
 

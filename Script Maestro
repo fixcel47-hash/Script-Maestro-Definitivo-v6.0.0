@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# UNIFIED INSTALLER SCRIPT (v3.0.2 - FIX YAML/Redis Syntax)
+# UNIFIED INSTALLER SCRIPT (v3.0.3 - MODO SILENCIOSO DE ENTRADA)
 # ¡Script independiente sin API ni tokens!
 # =================================================================================
 
-SCRIPT_VERSION="3.0.2-FIX"
+SCRIPT_VERSION="3.0.3-SILENT-FIX"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -59,49 +59,29 @@ show_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
-# Función para animación de espera
-spinner() {
-    local pid=$1
-    local delay=0.1
-    local spinstr='|/-\'
-    
-    echo -n "Procesando "
-    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-        printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"
-    echo -e "${GREEN}[COMPLETADO]${NC}"
-}
 
-# Función para ejecutar comandos mostrando animación de espera
+# Función de ejecución de comandos (SILENCIOSA)
 run_command() {
     local cmd=$1
     local msg=$2
     
     show_message "$msg"
     
-    # Ejecutar en subshell para capturar el PID y redirigir la salida
-    local output=$(eval "$cmd" 2>&1)
-    local exit_status=$?
+    # Ejecutar el comando y capturar la salida y el estado
+    # Se añade un log de inicio para dar feedback al usuario
+    show_message "Ejecutando en segundo plano..."
     
-    # Simular la animación mientras el comando se ejecuta
-    local cmd_pid=$!
-    spinner $cmd_pid
-    wait $cmd_pid
-    
-    # Si el comando falla, registrar el error y salir
-    if [ $exit_status -ne 0 ]; then
-        show_error "Comando falló: $cmd"
+    local output
+    if ! output=$(eval "$cmd" 2>&1); then
+        local exit_status=$?
+        show_error "Comando falló. Revise el error a continuación."
         show_error "Salida/Error del comando: $output"
         cleanup 1
-        exit $exit_status
+        return $exit_status
     fi
     
-    return $exit_status
+    show_success "Comando completado"
+    return 0
 }
 
 # Función de limpieza (incluye autodestrucción del script)
@@ -114,7 +94,6 @@ cleanup() {
     if [ $exit_code -ne 0 ]; then
         echo -e "${RED}[ERROR]${NC} Error detectado. Limpiando archivos temporales..."
         
-        # Eliminar archivos temporales en caso de error
         if [ ${#TEMP_FILES[@]} -gt 0 ]; then
             for file in "${TEMP_FILES[@]}"; do
                 if [ -f "$file" ]; then
@@ -222,7 +201,6 @@ EOF
 configure_rkhunter() {
     local config_file="/etc/rkhunter.conf"
     show_message "Configurando RKHunter..."
-    # Se añade la configuración para evitar fallos de actualización de espejos
     run_command "sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && \
                   sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && \
                   sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" \
@@ -254,7 +232,7 @@ sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
         show_success "Docker ya está instalado. Omitiendo la instalación de dependencias."
     fi
     
-    apt-get install -y git curl wget
+    run_command "apt-get install -y git curl wget" "Instalando utilidades del sistema..."
 }
 
 # Inicializar Docker Swarm
@@ -262,7 +240,6 @@ initialize_docker_swarm() {
     show_message "Verificando estado de Docker Swarm..."
     
     if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
-        show_message "Iniciando Docker Swarm..."
         run_command "docker swarm init --advertise-addr \$(hostname -I | awk '{print \$1}')" "Inicializando Docker Swarm..."
         if [ $? -eq 0 ]; then
             show_success "Docker Swarm inicializado correctamente"
@@ -278,32 +255,26 @@ initialize_docker_swarm() {
     INSTALLED_COMPONENTS["dependencies"]=true
 }
 
-# Instalar herramientas de seguridad (AQUÍ ESTÁN LOS ROOTKITS Y FIREWALL)
+# Instalar herramientas de seguridad
 install_server_tools() {
     show_message "Instalando herramientas de seguridad en el servidor: UFW, Fail2Ban, RKHunter, CHKRootkit..."
     
     show_message "Instalando Fail2Ban..."
-    apt-get install -y fail2ban
-    systemctl enable fail2ban
-    systemctl start fail2ban
+    run_command "apt-get install -y fail2ban && systemctl enable fail2ban && systemctl start fail2ban" "Configurando Fail2Ban..."
     
     show_message "Instalando RKHunter..."
-    # Se incluye la selección para evitar que pida interacción sobre el mailer de postfix
     echo "postfix postfix/main_mailer_type select No configuration" | debconf-set-selections
-    apt-get install -y rkhunter
-    configure_rkhunter # Configura espejos y propiedades
-    rkhunter --update
-    rkhunter --propupd
+    run_command "apt-get install -y rkhunter" "Descargando RKHunter..."
+    configure_rkhunter
+    run_command "rkhunter --update" "Actualizando base de datos de RKHunter..."
+    run_command "rkhunter --propupd" "Actualizando propiedades de RKHunter..."
     
     show_message "Instalando CHKRootkit..."
-    apt-get install -y chkrootkit
+    run_command "apt-get install -y chkrootkit" "Descargando CHKRootkit..."
 
     show_message "Configurando UFW Firewall (Permite 22, 80, 443)..."
-    apt-get install -y ufw
-    ufw allow ssh
-    ufw allow http
-    ufw allow https
-    echo "y" | ufw enable
+    run_command "apt-get install -y ufw" "Instalando UFW..."
+    run_command "ufw allow ssh && ufw allow http && ufw allow https && echo 'y' | ufw enable" "Activando UFW y reglas básicas..."
     
     show_success "Herramientas de seguridad instaladas correctamente"
     INSTALLED_COMPONENTS["security"]=true
@@ -336,7 +307,6 @@ create_volume_directories() {
     
     show_message "Creando directorios para volúmenes de $tool_name..."
    
-    # Extrae todas las rutas absolutas después de 'device:'
     local volume_paths=$(grep -oP "device: \K/[^\s]+" "$stack_file" | sort | uniq)
 
     if [ -z "$volume_paths" ]; then
@@ -345,7 +315,6 @@ create_volume_directories() {
     fi
 
     for path in $volume_paths; do
-        show_message "Creando directorio: $path"
         run_command "mkdir -p \"$path\"" "Creando directorio $path..."
         if [ $? -ne 0 ]; then
              show_error "Error al crear el directorio $path"
@@ -424,7 +393,7 @@ EOF
 }
 
 
-# Función para sanear y desplegar cada herramienta (CON CORRECCIONES)
+# Función para sanear y desplegar cada herramienta
 install_tool() {
     local tool_name=$1
     local subdomain=$2
@@ -460,9 +429,9 @@ install_tool() {
     sed -i "s|N8N_EDITOR_BASE_URL=.*|N8N_EDITOR_BASE_URL=https://$full_domain|g" "$stack_file"
     sed -i "s/HOST=.*$/HOST=$full_domain/g" "$stack_file" # EvoAPI
 
-    # Manejo de casos especiales (CORRECCIONES DE FALLOS ANTERIORES)
+    # Manejo de casos especiales (CORRECCIONES DE FALLOS)
     if [ "$tool_name" == "redis" ]; then
-        show_message "Aplicando **corrección de sintaxis y contraseña** para Redis..."
+        show_message "Aplicando corrección de sintaxis y contraseña para Redis..."
 
         # CORRECCIÓN 1: Agregar la contraseña al comando de redis-server
         sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass $COMMON_PASSWORD --loglevel warning/g" "$stack_file"
@@ -503,8 +472,9 @@ install_tool() {
 get_credentials() {
     show_message "Configuración inicial"
     
-    # 1. Contraseña
+    # 1. Contraseña (USANDO -s Y -p PARA MODO SILENCIOSO Y PROMPT)
     while [ -z "$COMMON_PASSWORD" ]; do
+        # 'r' para que las barras invertidas no sean interpretadas, 's' para modo silencioso, 'p' para el prompt
         read -rsp "Ingrese la contraseña común para todas las herramientas: " COMMON_PASSWORD
         echo
         if [ -z "$COMMON_PASSWORD" ]; then
@@ -525,7 +495,7 @@ get_credentials() {
     read -rp "Ingrese una clave secreta de 32 caracteres (o presione Enter para generar una): " SECRET_KEY
     if [ -z "$SECRET_KEY" ]; then
         SECRET_KEY=$(generate_random_key)
-        show_message "Se utilizará la siguiente clave secreta: $SECRET_KEY"
+        show_message "Se utilizará la siguiente clave secreta generada: $SECRET_KEY"
     fi
     
     show_message "Guardando credenciales en $DOCKER_DIR/.env.global..."
@@ -585,7 +555,6 @@ finalize_installation() {
     for i in "${!SELECTED_TOOLS[@]}"; do
         tool_name="${SELECTED_TOOLS[$i]}"
 
-        # Encontrar el índice de la herramienta
         tool_index=-1
         for j in "${!AVAILABLE_TOOLS[@]}"; do
             if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
@@ -595,12 +564,10 @@ finalize_installation() {
         done
 
         if [ $tool_index -ge 0 ]; then
-            # Leer el subdominio del archivo guardado
             subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
             if [ -f "$subdomain_file" ]; then
                 subdomain=$(cat "$subdomain_file")
             else
-                # Usar el predeterminado si no se guardó
                 subdomain="${DEFAULT_SUBDOMAINS[$tool_index]}"
             fi
 
@@ -609,11 +576,10 @@ finalize_installation() {
     done
     
     echo ""
-    echo "Información de credenciales:"
+    echo "Información de credenciales (Guardada en: $DOCKER_DIR/.env.global):"
     echo "- Contraseña común: $COMMON_PASSWORD"
     echo "- Clave secreta: $SECRET_KEY"
     echo ""
-    echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"
 
     cleanup 0 true 
 }

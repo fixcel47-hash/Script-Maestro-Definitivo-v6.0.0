@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# UNIFIED INSTALLER SCRIPT (v3.0.3 - FINAL Y ROBUSTO)
-# Corrige: Sintaxis YAML de Redis y robustez en la descarga de archivos.
+# UNIFIED INSTALLER SCRIPT (v3.0.2 - FIX YAML/Redis Syntax)
 # ¡Script independiente sin API ni tokens!
 # =================================================================================
 
-SCRIPT_VERSION="3.0.3-FINAL"
+SCRIPT_VERSION="3.0.2-FIX"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -34,16 +33,25 @@ declare -gA STACK_URLS=(
     [traefik]="https://github.com/user-attachments/files/22956506/traefik-stack.yml"
 )
 
+
+declare -gA INSTALLED_COMPONENTS=(
+    [dependencies]=false
+    [security]=false
+    [networks]=false
+)
+
 # Lista de herramientas disponibles y subdominios predeterminados
 AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "postgres" "n8" "evoapi" "chat")
 SELECTED_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 CUSTOM_SUBDOMAINS=()
 
+
 # Variables globales para credenciales
 BASE_DOMAIN=""
 COMMON_PASSWORD=""
 SECRET_KEY=""
+
 
 # Funciones de utilidad para mensajes
 show_message() { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -56,6 +64,7 @@ spinner() {
     local pid=$1
     local delay=0.1
     local spinstr='|/-\'
+    
     echo -n "Procesando "
     while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
         local temp=${spinstr#?}
@@ -72,24 +81,26 @@ spinner() {
 run_command() {
     local cmd=$1
     local msg=$2
+    
     show_message "$msg"
     
     # Ejecutar en subshell para capturar el PID y redirigir la salida
-    eval "$cmd" > /dev/null 2>&1 &
+    local output=$(eval "$cmd" 2>&1)
+    local exit_status=$?
+    
+    # Simular la animación mientras el comando se ejecuta
     local cmd_pid=$!
     spinner $cmd_pid
     wait $cmd_pid
-    local exit_status=$?
     
     # Si el comando falla, registrar el error y salir
     if [ $exit_status -ne 0 ]; then
-        # Ejecutar el comando de nuevo y capturar el error real para mostrarlo
-        local output=$(eval "$cmd" 2>&1)
-        show_error "Comando falló con estado $exit_status: $cmd"
+        show_error "Comando falló: $cmd"
         show_error "Salida/Error del comando: $output"
         cleanup 1
         exit $exit_status
     fi
+    
     return $exit_status
 }
 
@@ -103,6 +114,7 @@ cleanup() {
     if [ $exit_code -ne 0 ]; then
         echo -e "${RED}[ERROR]${NC} Error detectado. Limpiando archivos temporales..."
         
+        # Eliminar archivos temporales en caso de error
         if [ ${#TEMP_FILES[@]} -gt 0 ]; then
             for file in "${TEMP_FILES[@]}"; do
                 if [ -f "$file" ]; then
@@ -112,6 +124,7 @@ cleanup() {
         fi
     fi
     
+    # Si se solicita, eliminar solo los archivos stack.yml (en caso de éxito)
     if [ "$delete_stacks" = true ]; then
         for tool_name in "${SELECTED_TOOLS[@]}"; do
             local stack_file="$DOCKER_DIR/$tool_name/$tool_name-stack.yml"
@@ -123,6 +136,7 @@ cleanup() {
     
     # Autodestrucción del script
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
+        
         local self_destruct_script="/tmp/self_destruct_$$_$(date +%s).sh"
         cat > "$self_destruct_script" << EOF
 #!/bin/bash
@@ -140,6 +154,7 @@ EOF
     
     echo -e "${BLUE}[INFO]${NC} Limpieza completada"
     
+    # Mostrar mensaje final de error/éxito
     if [ $exit_code -ne 0 ]; then
         echo -e "${RED}[ERROR]${NC} La instalación ha fallado. Revise los logs para más información."
     else
@@ -155,6 +170,7 @@ register_temp_file() {
     local file_path=$1
     TEMP_FILES+=("$file_path")
 }
+
 
 # Función para descargar archivos directamente desde el URL
 download_stack_file() {
@@ -177,15 +193,6 @@ download_stack_file() {
     fi
     
     register_temp_file "$local_path"
-
-    # === VERIFICACIÓN DE ROBUSTEZ AÑADIDA ===
-    if [ ! -f "$local_path" ] || [ ! -s "$local_path" ]; then
-        show_error "El archivo stack para $tool_name fue descargado, pero está vacío. Revisa la URL: $download_url"
-        cleanup 1
-        exit 1
-    fi
-    # ========================================
-    
     show_success "Archivo stack para $tool_name descargado correctamente"
     return 0
 }
@@ -195,7 +202,132 @@ generate_random_key() {
     tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32
 }
 
-# (Las funciones para dependencias, Swarm, etc. se mantienen)
+# Función para configurar tamaño de los logs de Docker
+configure_docker_logs() {
+    local config_file="/etc/docker/daemon.json"
+    show_message "Configurando límites de logs en Docker..."
+    cat > "$config_file" <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+EOF
+    run_command "systemctl restart docker" "Reiniciando Docker para aplicar configuración..."
+}
+
+# Función para configurar rkhunter
+configure_rkhunter() {
+    local config_file="/etc/rkhunter.conf"
+    show_message "Configurando RKHunter..."
+    # Se añade la configuración para evitar fallos de actualización de espejos
+    run_command "sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && \
+                  sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && \
+                  sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" \
+                "Aplicando configuración de RKHunter..."
+}
+
+# Instalar dependencias
+install_dependencies() {
+    show_message "Verificando e instalando dependencias (Docker, curl, git)..."
+    apt-get update
+
+    if ! command -v docker &> /dev/null; then
+        show_message "Docker no encontrado. Instalando..."
+        apt-get install -y ca-certificates curl
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+        echo \
+"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+$(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        apt-get update
+        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        systemctl enable docker
+        systemctl start docker
+        configure_docker_logs
+        show_success "Docker y dependencias instaladas."
+    else
+        show_success "Docker ya está instalado. Omitiendo la instalación de dependencias."
+    fi
+    
+    apt-get install -y git curl wget
+}
+
+# Inicializar Docker Swarm
+initialize_docker_swarm() {
+    show_message "Verificando estado de Docker Swarm..."
+    
+    if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
+        show_message "Iniciando Docker Swarm..."
+        run_command "docker swarm init --advertise-addr \$(hostname -I | awk '{print \$1}')" "Inicializando Docker Swarm..."
+        if [ $? -eq 0 ]; then
+            show_success "Docker Swarm inicializado correctamente"
+        else
+            show_error "Error al inicializar Docker Swarm"
+            cleanup 1
+            exit 1
+        fi
+    else
+        show_message "Docker Swarm ya está activo"
+    fi
+
+    INSTALLED_COMPONENTS["dependencies"]=true
+}
+
+# Instalar herramientas de seguridad (AQUÍ ESTÁN LOS ROOTKITS Y FIREWALL)
+install_server_tools() {
+    show_message "Instalando herramientas de seguridad en el servidor: UFW, Fail2Ban, RKHunter, CHKRootkit..."
+    
+    show_message "Instalando Fail2Ban..."
+    apt-get install -y fail2ban
+    systemctl enable fail2ban
+    systemctl start fail2ban
+    
+    show_message "Instalando RKHunter..."
+    # Se incluye la selección para evitar que pida interacción sobre el mailer de postfix
+    echo "postfix postfix/main_mailer_type select No configuration" | debconf-set-selections
+    apt-get install -y rkhunter
+    configure_rkhunter # Configura espejos y propiedades
+    rkhunter --update
+    rkhunter --propupd
+    
+    show_message "Instalando CHKRootkit..."
+    apt-get install -y chkrootkit
+
+    show_message "Configurando UFW Firewall (Permite 22, 80, 443)..."
+    apt-get install -y ufw
+    ufw allow ssh
+    ufw allow http
+    ufw allow https
+    echo "y" | ufw enable
+    
+    show_success "Herramientas de seguridad instaladas correctamente"
+    INSTALLED_COMPONENTS["security"]=true
+}
+
+# Crear redes de Docker para Swarm
+create_docker_networks() {
+    show_message "Creando redes Docker para Swarm..."
+    
+    if ! docker network ls 2>/dev/null | grep -q "frontend"; then
+        run_command "docker network create --driver overlay --attachable frontend" "Creando red frontend..."
+        show_success "Red 'frontend' creada"
+    else
+        show_warning "La red 'frontend' ya existe"
+    fi
+    
+    if ! docker network ls 2>/dev/null | grep -q "backend"; then
+        run_command "docker network create --driver overlay --attachable backend" "Creando red backend..."
+        show_success "Red 'backend' creada"
+    else
+        show_warning "La red 'backend' ya existe"
+    fi
+    INSTALLED_COMPONENTS["networks"]=true
+}
 
 # Función para crear directorios para volúmenes
 create_volume_directories() {
@@ -214,8 +346,8 @@ create_volume_directories() {
 
     for path in $volume_paths; do
         show_message "Creando directorio: $path"
-        # Usamos run_command para manejar la creación y la salida
-        if ! mkdir -p "$path"; then
+        run_command "mkdir -p \"$path\"" "Creando directorio $path..."
+        if [ $? -ne 0 ]; then
              show_error "Error al crear el directorio $path"
              cleanup 1
              exit 1
@@ -224,7 +356,75 @@ create_volume_directories() {
 }
 
 
-# Función para sanear y desplegar cada herramienta (Corregida)
+# Función para inicializar la base de datos de Chatwoot
+initialize_chatwoot_database() {
+    local tool_name="chatwoot"
+    local subdomain=$1
+    
+    show_message "Inicializando base de datos de Chatwoot..."
+    
+    # 1. Crear el stack de inicialización (temporal)
+    local init_stack_file="$DOCKER_DIR/$tool_name/$tool_name-init-stack.yml"
+    cat > "$init_stack_file" <<EOF
+version: '3.7'
+services:
+  db-init:
+    image: chatwoot/chatwoot:latest
+    command: bundle exec rails db:chatwoot_setup
+    environment:
+      - RAILS_ENV=production
+      - POSTGRES_HOST=postgres_postgres-server
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=$COMMON_PASSWORD
+      - POSTGRES_DATABASE=chatwoot_db
+      - SECRET_KEY_BASE=$SECRET_KEY
+      - REDIS_URL=redis://redis_redis-server:6379/1
+    networks:
+      - backend
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: "none"
+networks:
+  backend:
+    external: true
+EOF
+    register_temp_file "$init_stack_file"
+
+    # 2. Desplegar el stack temporal de inicialización
+    run_command "docker stack deploy -c $init_stack_file ${tool_name}-init" "Desplegando stack de inicialización de base de datos..."
+
+    # 3. Esperar a que el servicio de inicialización termine
+    show_message "Esperando a que la inicialización de la base de datos termine (puede tardar varios minutos)..."
+    local init_service_id="${tool_name}-init_db-init"
+    local init_task_status=""
+    local max_wait=300 # 5 minutos
+
+    for i in $(seq 1 $max_wait); do
+        init_task_status=$(docker service ps -f "desired-state=shutdown" -f "name=${init_service_id}" --format "{{.CurrentState}}" ${tool_name}-init 2>/dev/null | head -n 1)
+        
+        if [[ "$init_task_status" == *"Shutdown"* ]]; then
+            show_success "Inicialización de base de datos completada exitosamente"
+            break
+        fi
+        if [ $i -eq $max_wait ]; then
+            show_error "Timeout: El servicio de inicialización de Chatwoot no finalizó después de 5 minutos."
+            run_command "docker stack rm ${tool_name}-init" "Limpiando stack de inicialización fallido..."
+            cleanup 1
+            exit 1
+        fi
+        sleep 1
+    done
+
+    # 4. Limpiar el stack de inicialización
+    run_command "docker stack rm ${tool_name}-init" "Limpiando stack de inicialización..."
+    
+    show_success "Base de datos de Chatwoot inicializada correctamente"
+}
+
+
+# Función para sanear y desplegar cada herramienta (CON CORRECCIONES)
 install_tool() {
     local tool_name=$1
     local subdomain=$2
@@ -234,7 +434,7 @@ install_tool() {
     show_message "Preparando instalación de $tool_name con subdominio: $subdomain.$BASE_DOMAIN"
 
     mkdir -p "$stack_dir"
-    download_stack_file "$tool_name" "$stack_file" # Ya incluye la verificación de robustez
+    download_stack_file "$tool_name" "$stack_file"
 
     # Crear directorios para volúmenes
     create_volume_directories "$stack_file" "$tool_name"
@@ -242,9 +442,9 @@ install_tool() {
     # Sanitización general de variables de Traefik y Secrets
     local full_domain="$subdomain.$BASE_DOMAIN"
 
-    show_message "Aplicando sanitización general de variables..."
+    show_message "Aplicando sanitización de variables..."
     
-    # 1. Reemplazar variables de entorno específicas
+    # 1. Reemplazar variables de entorno clave
     sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$stack_file"
     sed -i "s|N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$SECRET_KEY|g" "$stack_file"
     sed -i "s|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$COMMON_PASSWORD|g" "$stack_file"
@@ -252,40 +452,38 @@ install_tool() {
     sed -i "s|DB_POSTGRESDB_PASSWORD=.*|DB_POSTGRESDB_PASSWORD=$COMMON_PASSWORD|g" "$stack_file"
     sed -i "s|RAILS_INBOUND_EMAIL_PASSWORD=.*|RAILS_INBOUND_EMAIL_PASSWORD=$COMMON_PASSWORD|g" "$stack_file"
     sed -i "s|PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$COMMON_PASSWORD|g" "$stack_file"
-
-    # 2. Reemplazar dominio base y subdominio local (Reglas Traefik y URLs)
-    sed -i "s/REPLACE_SUBDOMAIN.REPLACE_DOMAIN/$full_domain/g" "$stack_file" # Para Traefik
-    sed -i "s/REPLACE_DOMAIN/$BASE_DOMAIN/g" "$stack_file" # Por si acaso se usa el dominio base
+    
+    # 2. Reemplazar subdominio y dominio (URLs y Reglas Traefik)
+    sed -i "s/REPLACE_SUBDOMAIN.REPLACE_DOMAIN/$full_domain/g" "$stack_file"
+    sed -i "s/REPLACE_DOMAIN/$BASE_DOMAIN/g" "$stack_file"
     sed -i "s/N8N_HOST=.*$/N8N_HOST=$full_domain/g" "$stack_file"
     sed -i "s|N8N_EDITOR_BASE_URL=.*|N8N_EDITOR_BASE_URL=https://$full_domain|g" "$stack_file"
     sed -i "s/HOST=.*$/HOST=$full_domain/g" "$stack_file" # EvoAPI
 
-    # Manejo de casos especiales (CORRECCIONES CLAVE)
+    # Manejo de casos especiales (CORRECCIONES DE FALLOS ANTERIORES)
     if [ "$tool_name" == "redis" ]; then
         show_message "Aplicando **corrección de sintaxis y contraseña** para Redis..."
 
-        # CORRECCIÓN 1: Agregar la contraseña al comando de redis-server (YAML)
-        sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass \$COMMON_PASSWORD --loglevel warning/g" "$stack_file"
+        # CORRECCIÓN 1: Agregar la contraseña al comando de redis-server
+        sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass $COMMON_PASSWORD --loglevel warning/g" "$stack_file"
 
-        # CORRECCIÓN 2: Inyectar variables de entorno en redisinsight con la **indentación correcta** (4 espacios)
-        # Esto soluciona el error de "Additional property environment is not allowed" en Swarm.
+        # CORRECCIÓN 2: Inyectar variables de entorno en redisinsight con la INDENTACIÓN CORRECTA
         sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD=\$COMMON_PASSWORD\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$stack_file"
         
-        show_success "Corrección de Redis aplicada"
+        show_success "Corrección de Redis aplicada."
     fi
 
     if [ "$tool_name" == "n8n" ]; then
-        show_message "Aplicando correcciones de ruta para n8n..."
-        # Corrección: Asegurar que las rutas de los subdominios de webhook sean correctas.
+        show_message "Ajustando subdominios de webhook para n8n..."
+        # Reemplaza la URL de webhook para que apunte al subdominio del stack
         sed -i "s/WEBHOOK_URL=https:\/\/webhook\..*$/WEBHOOK_URL=https:\/\/webhook.$full_domain/g" "$stack_file"
         sed -i "s/REPLACE_WEBHOOK_SUBDOMAIN/webhook.$subdomain/g" "$stack_file"
-        show_success "Corrección de n8n aplicada"
+        show_success "Ajuste de n8n aplicado."
     fi
-    show_success "Sanitización de $tool_name completada"
+    show_success "Sanitización de $tool_name completada."
 
     # Desplegar el stack
-    show_message "Desplegando $tool_name en Docker Swarm..."
-    run_command "docker stack deploy -c $stack_file $tool_name" "Desplegando $tool_name..."
+    run_command "docker stack deploy -c $stack_file $tool_name" "Desplegando $tool_name en Docker Swarm..."
     
     if [ $? -eq 0 ]; then
         show_success "$tool_name instalado correctamente en Docker Swarm"
@@ -298,10 +496,10 @@ install_tool() {
     fi
 }
 
-# (Las funciones get_credentials, main_installation_flow y finalize_installation se mantienen)
-# ...
+# =================================================================
+# LÓGICA DE EJECUCIÓN
+# =================================================================
 
-# Función para solicitar credenciales y validar (simplificada)
 get_credentials() {
     show_message "Configuración inicial"
     
@@ -320,12 +518,11 @@ get_credentials() {
         if [ -z "$BASE_DOMAIN" ]; then
             show_error "El dominio no puede estar vacío."
         fi
-        # Sanitizar dominio (eliminar https:// o http:// si existen)
         BASE_DOMAIN=$(echo "$BASE_DOMAIN" | sed 's|^https\?://||')
     done
 
     # 3. Clave Secreta
-    read -rp "Ingrese una clave secreta de 32 caracteres para las herramientas (o presione Enter para usar una generada automáticamente): " SECRET_KEY
+    read -rp "Ingrese una clave secreta de 32 caracteres (o presione Enter para generar una): " SECRET_KEY
     if [ -z "$SECRET_KEY" ]; then
         SECRET_KEY=$(generate_random_key)
         show_message "Se utilizará la siguiente clave secreta: $SECRET_KEY"
@@ -339,7 +536,6 @@ get_credentials() {
 }
 
 
-# Ejecución principal del script
 main_installation_flow() {
     if [ "$EUID" -ne 0 ]; then
         show_error "Por favor, ejecuta este script como root o con sudo."
@@ -349,31 +545,37 @@ main_installation_flow() {
     get_credentials
     show_message "Iniciando la instalación automatizada de herramientas Docker..."
     
-    # Aquí irían las llamadas a las funciones de instalación reales (dependencias, Swarm, networks)
-    # Por simplicidad en este análisis, asumimos que se ejecutan correctamente.
+    # 1. Dependencias y entorno
+    install_dependencies
+    initialize_docker_swarm
+    create_docker_networks
+    install_server_tools # Firewall y seguridad
     
-    # 3. Instalación de herramientas (Bucle principal)
+    # 2. Instalación de herramientas (Bucle principal)
     for i in "${!SELECTED_TOOLS[@]}"; do
         tool_name="${SELECTED_TOOLS[$i]}"
         default_subdomain="${DEFAULT_SUBDOMAINS[$i]}"
         
-        subdomain_to_use=$default_subdomain
+        install_tool "$tool_name" "$default_subdomain"
         
-        install_tool "$tool_name" "$subdomain_to_use"
+        # Esperar un tiempo prudente para bases de datos antes de usarlas
+        if [ "$tool_name" = "postgres" ] || [ "$tool_name" = "redis" ]; then
+            show_message "Esperando a que $tool_name se estabilice (15 segundos)..."
+            sleep 15
+        fi
         
-        # 4. Post-instalación (Solo Chatwoot requiere inicialización)
+        # Post-instalación
         if [ "$tool_name" == "chatwoot" ]; then
-            show_message "Esperando 30 segundos para que Chatwoot se estabilice..."
+            show_message "Esperando 30 segundos para que el stack de Chatwoot se estabilice antes de la inicialización..."
             sleep 30 
-            # initialize_chatwoot_database "$subdomain_to_use" # Descomentar en el script final si la función existe
+            initialize_chatwoot_database "$default_subdomain" 
         fi
     done
 
-    # 5. Finalización y limpieza
+    # 3. Mensaje final y limpieza
     finalize_installation
 }
 
-# Función para el mensaje final
 finalize_installation() {
     echo ""
     show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
@@ -383,16 +585,27 @@ finalize_installation() {
     for i in "${!SELECTED_TOOLS[@]}"; do
         tool_name="${SELECTED_TOOLS[$i]}"
 
-        subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
-        if [ -f "$subdomain_file" ]; then
-            subdomain=$(cat "$subdomain_file")
-        else
-            subdomain="${DEFAULT_SUBDOMAINS[$i]}"
-        fi
+        # Encontrar el índice de la herramienta
+        tool_index=-1
+        for j in "${!AVAILABLE_TOOLS[@]}"; do
+            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
+                tool_index=$j
+                break
+            fi
+        done
 
-        TOOL_NAME_CAPITALIZED=$(echo "$tool_name" | awk '{print toupper(substr($0,1,1))tolower(substr($0,2))}')
-        
-        echo "- ${TOOL_NAME_CAPITALIZED}: https://$subdomain.$BASE_DOMAIN"
+        if [ $tool_index -ge 0 ]; then
+            # Leer el subdominio del archivo guardado
+            subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
+            if [ -f "$subdomain_file" ]; then
+                subdomain=$(cat "$subdomain_file")
+            else
+                # Usar el predeterminado si no se guardó
+                subdomain="${DEFAULT_SUBDOMAINS[$tool_index]}"
+            fi
+
+            echo "- ${tool_name^}: https://$subdomain.$BASE_DOMAIN"
+        fi
     done
     
     echo ""

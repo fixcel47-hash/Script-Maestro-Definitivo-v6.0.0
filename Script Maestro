@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# UNIFIED INSTALLER SCRIPT (v3.0.3 - MODO SILENCIOSO DE ENTRADA)
-# ¡Script independiente sin API ni tokens!
+# UNIFIED INSTALLER SCRIPT (v3.0.4 - MODO VISIBILIDAD COMPLETA)
+# Muestra el progreso de cada comando para total transparencia.
 # =================================================================================
 
-SCRIPT_VERSION="3.0.3-SILENT-FIX"
+SCRIPT_VERSION="3.0.4-FULL-VISIBILITY"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -59,30 +59,65 @@ show_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
+# -----------------------------------------------
+# FUNCIONES DE EJECUCIÓN CON VISIBILIDAD (SPINNER)
+# -----------------------------------------------
 
-# Función de ejecución de comandos (SILENCIOSA)
+# Función para animación de espera
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
+    
+    echo -n "Procesando "
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+    echo -e "${GREEN}[COMPLETADO]${NC}"
+}
+
+# Función para ejecutar comandos mostrando animación de espera
 run_command() {
     local cmd=$1
     local msg=$2
     
     show_message "$msg"
     
-    # Ejecutar el comando y capturar la salida y el estado
-    # Se añade un log de inicio para dar feedback al usuario
-    show_message "Ejecutando en segundo plano..."
+    # Crea un archivo temporal para capturar la salida
+    local temp_output=$(mktemp)
     
-    local output
-    if ! output=$(eval "$cmd" 2>&1); then
-        local exit_status=$?
+    # Ejecutar en segundo plano
+    (eval "$cmd" 2>&1 | tee "$temp_output") &
+    local cmd_pid=$!
+    
+    # Mostrar el spinner mientras el comando se ejecuta
+    spinner $cmd_pid
+    wait $cmd_pid
+    local exit_status=$?
+    
+    # Capturar la salida final (por si el spinner la interrumpió visualmente)
+    local output=$(cat "$temp_output")
+    rm -f "$temp_output"
+    
+    # Si el comando falla, registrar el error y salir
+    if [ $exit_status -ne 0 ]; then
         show_error "Comando falló. Revise el error a continuación."
         show_error "Salida/Error del comando: $output"
         cleanup 1
-        return $exit_status
+        exit $exit_status
     fi
     
-    show_success "Comando completado"
-    return 0
+    return $exit_status
 }
+
+# -----------------------------------------------
+# FUNCIONES DE UTILIDAD
+# -----------------------------------------------
 
 # Función de limpieza (incluye autodestrucción del script)
 cleanup() {
@@ -165,7 +200,8 @@ download_stack_file() {
     
     show_message "Descargando stack '$tool_name' desde GitHub..."
     
-    if ! curl -fsSL --max-time $DOWNLOAD_TIMEOUT -o "$local_path" "$download_url"; then
+    # Usar `curl` sin el spinner para mostrar la barra de progreso de descarga si es posible.
+    if ! curl -fsSL --progress-bar --max-time $DOWNLOAD_TIMEOUT -o "$local_path" "$download_url"; then
         show_error "Error al descargar el archivo stack para $tool_name desde $download_url"
         cleanup 1
         exit 1
@@ -210,29 +246,28 @@ configure_rkhunter() {
 # Instalar dependencias
 install_dependencies() {
     show_message "Verificando e instalando dependencias (Docker, curl, git)..."
-    apt-get update
+    run_command "apt-get update" "Actualizando lista de paquetes del sistema..."
 
     if ! command -v docker &> /dev/null; then
         show_message "Docker no encontrado. Instalando..."
-        apt-get install -y ca-certificates curl
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-        chmod a+r /etc/apt/keyrings/docker.asc
+        run_command "apt-get install -y ca-certificates curl" "Instalando certificados y curl..."
+        run_command "install -m 0755 -d /etc/apt/keyrings && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc && chmod a+r /etc/apt/keyrings/docker.asc" "Añadiendo clave GPG de Docker..."
+        
         echo \
 "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
 $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
 sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        apt-get update
-        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-        systemctl enable docker
-        systemctl start docker
+        
+        run_command "apt-get update" "Actualizando paquetes post-repositorio Docker..."
+        run_command "apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" "Instalando componentes principales de Docker..."
+        run_command "systemctl enable docker && systemctl start docker" "Habilitando y arrancando servicio Docker..."
         configure_docker_logs
         show_success "Docker y dependencias instaladas."
     else
         show_success "Docker ya está instalado. Omitiendo la instalación de dependencias."
     fi
     
-    run_command "apt-get install -y git curl wget" "Instalando utilidades del sistema..."
+    run_command "apt-get install -y git curl wget" "Instalando utilidades del sistema (git, wget)..."
 }
 
 # Inicializar Docker Swarm
@@ -257,7 +292,7 @@ initialize_docker_swarm() {
 
 # Instalar herramientas de seguridad
 install_server_tools() {
-    show_message "Instalando herramientas de seguridad en el servidor: UFW, Fail2Ban, RKHunter, CHKRootkit..."
+    show_message "Instalando herramientas de seguridad: UFW, Fail2Ban, RKHunter, CHKRootkit..."
     
     show_message "Instalando Fail2Ban..."
     run_command "apt-get install -y fail2ban && systemctl enable fail2ban && systemctl start fail2ban" "Configurando Fail2Ban..."
@@ -474,7 +509,7 @@ get_credentials() {
     
     # 1. Contraseña (USANDO -s Y -p PARA MODO SILENCIOSO Y PROMPT)
     while [ -z "$COMMON_PASSWORD" ]; do
-        # 'r' para que las barras invertidas no sean interpretadas, 's' para modo silencioso, 'p' para el prompt
+        # Oculta la entrada (modo seguro)
         read -rsp "Ingrese la contraseña común para todas las herramientas: " COMMON_PASSWORD
         echo
         if [ -z "$COMMON_PASSWORD" ]; then

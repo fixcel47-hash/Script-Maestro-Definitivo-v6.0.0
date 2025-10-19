@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR DOCKER SWARM MAJORADO (v5.4.2 - FIX: RACE CONDITION CHATWOOT)
+# INSTALADOR DOCKER SWARM MAJORADO (v5.4.3 - FIX: COMANDO CHATWOOT NO RECONOCIDO)
 # Arreglo del fallo crítico al inicializar la base de datos de Chatwoot.
 # =================================================================================
 
-SCRIPT_VERSION="5.4.2-FINAL-CHATWOOT-FIX"
+SCRIPT_VERSION="5.4.3-FINAL-CHATWOOT-COMMAND-FIX"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -118,7 +118,6 @@ cleanup() {
         sleep 5
         
         # FIX CRÍTICO: Intentar remover el volumen permanente de Chatwoot en caso de fallo de inicialización.
-        # Esto asegura que el próximo intento de inicialización comience con una DB limpia.
         show_warning "Eliminando volumen de datos de Chatwoot fallido (si existe) para un reintento limpio."
         docker volume rm chatwoot_postgres 2>/dev/null
         
@@ -227,9 +226,9 @@ pre_pull_images() {
 }
 
 
-# --- Inicialización de Chatwoot (FIX V5.4.2) ---
+# --- Inicialización de Chatwoot (FIX V5.4.3) ---
 initialize_chatwoot_database() {
-    show_message "Iniciando base de datos de Chatwoot (Proceso avanzado, FIX garantizado V5.4.2)..."
+    show_message "Iniciando base de datos de Chatwoot (Proceso avanzado, FIX garantizado V5.4.3 - Comando fundamental)..."
     
     local init_stack_file="/tmp/chatwoot-init-stack.yml"
     local postgres_volume_name="chatwoot_postgres"
@@ -256,8 +255,8 @@ services:
 
   chatwoot-init:
     image: chatwoot/chatwoot:latest
-    # FIX V5.4.2: Aumentar sleep y usar db:chatwoot_setup que es más estable.
-    command: ["/bin/sh", "-c", "sleep 30 && bundle exec rails db:chatwoot_setup"]
+    # FIX V5.4.3: Usar la secuencia fundamental de comandos Rails para evitar "Unrecognized command"
+    command: ["/bin/sh", "-c", "sleep 30 && bundle exec rails db:create db:migrate db:seed"]
     environment:
       - POSTGRES_HOST=chatwoot-postgres
       - POSTGRES_PORT=5432
@@ -289,7 +288,7 @@ EOF_INIT
     # 3. Desplegar stack de inicialización
     run_command "docker stack deploy -c \"$init_stack_file\" chatwoot-init" "Desplegando stack de inicialización temporal..."
 
-    show_message "Esperando hasta 15 minutos para que la inicialización de Chatwoot (db:setup) complete su tarea..."
+    show_message "Esperando hasta 15 minutos para que la inicialización de Chatwoot (db:create, migrate, seed) complete su tarea..."
     local init_complete=false; local max_wait=900; local wait_time=0
     
     while [ $wait_time -lt $max_wait ] && [ "$init_complete" = false ]; do
@@ -411,7 +410,7 @@ install_docker_tool() {
 main() {
     echo -e "\n${GREEN}===========================================${NC}"
     echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀   ${NC}"
-    echo -e "${GREEN}      (V5.4.2 - FIX RACE CONDITION)      ${NC}"
+    echo -e "${GREEN}      (V5.4.3 - FIX CHATWOOT COMMAND)    ${NC}"
     echo -e "${GREEN}===========================================${NC}\n"
 
     if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi

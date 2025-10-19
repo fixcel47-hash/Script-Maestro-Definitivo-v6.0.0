@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="1.2.4" # Versión actualizada por la corrección del timeout
+SCRIPT_VERSION="1.2.4" # Versión actualizada por la corrección del timeout y sintaxis
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -571,7 +571,7 @@ create_volume_directories() {
     done
 }
 
-# Función para esperar a que un servicio esté disponible
+# Función para esperar a que un servicio esté disponible (no usada en el flujo corregido)
 wait_for_service() {
     local service_url=$1
     local timeout=${2:-300}  # timeout por defecto de 5 minutos
@@ -644,7 +644,7 @@ initialize_chatwoot_database() {
     show_message "Creando stack temporal para inicialización de base de datos..."
     
     local init_stack_file="/tmp/chatwoot-init-stack.yml"
-    # El stack se crea aquí directamente
+    # El stack se crea aquí directamente (CREACIÓN)
     cat > "$init_stack_file" << EOF
 version: '3.8'
 
@@ -679,3 +679,368 @@ services:
     environment:
       - POSTGRES_HOST=chatwoot-postgres
       - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=chatwoot
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=$COMMON_PASSWORD
+      - REDIS_URL=redis://redis-server:6379/4
+      - SECRET_KEY_BASE=$SECRET_KEY
+      - RAILS_ENV=production
+      - NODE_ENV=production
+    networks:
+      - backend
+    depends_on:
+      - chatwoot-postgres
+    deploy:
+      restart_policy:
+        condition: none
+      placement:
+        constraints:
+          - node.role == manager
+
+networks:
+  backend:
+    external: true
+
+volumes:
+  chatwoot_postgres:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/chatwoot/postgres_data
+      o: bind
+EOF
+    
+    register_temp_file "$init_stack_file"
+    
+    # Desplegar el stack de inicialización
+    show_message "Desplegando stack de inicialización de Chatwoot..."
+    if ! docker stack deploy -c "$init_stack_file" chatwoot-init >/dev/null 2>&1; then
+        show_error "Error al desplegar el stack de inicialización"
+        return 1
+    fi
+
+    show_success "Stack de inicialización desplegado"
+    
+    # Esperar a que el contenedor de PostgreSQL esté corriendo
+    local postgres_container_id=""
+    local postgres_attempt=0
+    local max_postgres_attempt=30
+    
+    show_message "Esperando a que el contenedor de PostgreSQL inicie..."
+    while [ $postgres_attempt -lt $max_postgres_attempt ] && [ -z "$postgres_container_id" ]; do
+        postgres_container_id=$(docker ps -q --filter "name=chatwoot-init_chatwoot-postgres")
+        if [ -z "$postgres_container_id" ]; then
+            sleep 5
+            postgres_attempt=$((postgres_attempt + 1))
+        fi
+    done
+
+    if [ -z "$postgres_container_id" ]; then
+        show_error "No se pudo obtener el ID del contenedor PostgreSQL"
+        docker stack rm chatwoot-init >/dev/null 2>&1
+        return 1
+    fi
+
+    # Verificar conexión a PostgreSQL usando pg_isready
+    show_message "Verificando disponibilidad de PostgreSQL..."
+    local pg_ready=false
+    # 5 minutos para que PostgreSQL esté listo
+    local max_pg_wait=60
+    local pg_attempt=0
+
+    while [ $pg_attempt -lt $max_pg_wait ] && [ "$pg_ready" = false ]; do
+        if docker exec "$postgres_container_id" pg_isready -U postgres -h localhost >/dev/null 2>&1; then
+            pg_ready=true
+            show_success "PostgreSQL está listo"
+            # Espera adicional para asegurar estabilidad
+            sleep 10
+        else
+            sleep 5
+            pg_attempt=$((pg_attempt + 1))
+            show_message "Esperando PostgreSQL... ($pg_attempt/$max_pg_wait intentos)"
+        fi
+    done
+
+    if [ "$pg_ready" = false ]; then
+        show_error "PostgreSQL no está disponible después de 5 minutos"
+        docker stack rm chatwoot-init >/dev/null 2>&1
+        return 1
+    fi
+        
+    # Esperar a que termine la inicialización
+    show_message "Esperando a que termine la inicialización de la base de datos..."
+    local init_complete=false
+    # 10 minutos máximo para la inicialización (600 segundos)
+    local max_wait=600
+    local wait_time=0
+    
+    while [ $wait_time -lt $max_wait ] && [ "$init_complete" = false ]; do
+        # Verificar si el servicio ha terminado exitosamente
+        local service_status=$(docker service ps chatwoot-init_chatwoot-init --format "{{.CurrentState}}" --no-trunc 2>/dev/null | head -1)
+        
+        if echo "$service_status" | grep -q "Complete"; then
+            init_complete=true
+            show_success "Inicialización de base de datos completada exitosamente"
+        elif echo "$service_status" | grep -q "Failed"; then
+            show_error "La inicialización de la base de datos falló"
+            # Mostrar logs para diagnóstico
+            show_message "Logs del servicio de inicialización:"
+            docker service logs chatwoot-init_chatwoot-init 2>/dev/null | tail -20
+            show_message "Logs de PostgreSQL:"
+            docker service logs chatwoot-init_chatwoot-postgres 2>/dev/null | tail -20
+            break
+        fi
+        
+        sleep 10
+        wait_time=$((wait_time + 10))
+        
+        # Mostrar progreso cada minuto
+        if [ $((wait_time % 60)) -eq 0 ]; then
+            show_message "Inicializando base de datos... ($wait_time/$max_wait segundos)"
+            # Mostrar logs actuales cada minuto para debugging
+            show_message "Estado actual de inicialización:"
+            docker service logs chatwoot-init_chatwoot-init --tail 5 2>/dev/null | tail -3
+        fi
+    done
+    
+    # Limpiar el stack de inicialización
+    show_message "Limpiando stack de inicialización..."
+    docker stack rm chatwoot-init >/dev/null 2>&1
+    
+    # Esperar a que se limpie completamente
+    sleep 15
+    
+    if [ "$init_complete" = true ]; then
+        show_success "Base de datos de Chatwoot inicializada correctamente"
+        return 0
+    else
+        show_error "La inicialización de la base de datos no se completó en el tiempo esperado"
+        return 1
+    fi
+}
+
+
+# Función para instalar una herramienta con Docker Swarm (versión corregida para Chatwoot)
+install_docker_tool() {
+    tool_name=$1
+    default_subdomain=$2
+    
+    show_message "Configurando $tool_name..."
+    tool_dir="$DOCKER_DIR/$tool_name"
+    mkdir -p $tool_dir
+    cd $tool_dir || {
+        show_error "No se pudo acceder al directorio $tool_dir"
+        cleanup 1
+        exit 1
+    }
+    
+    # Solicitar subdominio
+    read -p "Ingrese el subdominio para $tool_name [$default_subdomain]: " SUBDOMAIN
+    SUBDOMAIN=${SUBDOMAIN:-$default_subdomain}
+
+    # Guardar el subdominio personalizado en el array
+    CUSTOM_SUBDOMAINS[$tool_index]=$SUBDOMAIN
+
+    # Guardar el subdominio en un archivo para referencia futura
+    subdomain_file="$tool_dir/.subdomain"
+    echo "$SUBDOMAIN" > "$subdomain_file"
+    register_temp_file "$subdomain_file"
+    
+    # Descargar archivos de configuración desde la API
+    show_message "Descargando archivos de configuración para $tool_name..."
+    stack_file="$tool_dir/$tool_name-stack.yml"
+    download_from_api "docker/$tool_name/$tool_name-stack.yml" "$stack_file"
+    
+    # Crear archivo temporal para reemplazar variables
+    deploy_file="$tool_dir/$tool_name-deploy.yml"
+    cp "$stack_file" "$deploy_file"
+    register_temp_file "$deploy_file"
+
+    # Reemplazar las variables en el archivo de stack
+    sed -i "s|REPLACE_PASSWORD|$COMMON_PASSWORD|g" "$deploy_file"
+    sed -i "s|REPLACE_SUBDOMAIN|$SUBDOMAIN|g" "$deploy_file"
+    sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$deploy_file"
+    sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$deploy_file"
+
+    # Crear directorios para volúmenes DESPUÉS de reemplazar las variables
+    create_volume_directories "$deploy_file" "$tool_name"
+    
+    # Tratamiento especial para Chatwoot
+    if [ "$tool_name" = "chatwoot" ]; then
+        show_message "Chatwoot detectado - se requiere inicialización de base de datos"
+        
+        # Verificar que Redis esté desplegado (Chatwoot usa su propio PostgreSQL)
+        if ! docker service ls | grep -q "redis_redis"; then
+            show_error "Redis debe estar desplegado antes de instalar Chatwoot"
+            cleanup 1
+            exit 1
+        fi
+        
+        # Inicializar la base de datos antes del despliegue
+        if initialize_chatwoot_database "$SUBDOMAIN"; then
+            show_success "Base de datos de Chatwoot inicializada correctamente"
+        else
+            show_error "Error al inicializar la base de datos de Chatwoot"
+            cleanup 1
+            exit 1
+        fi
+    fi
+    
+    # Desplegar stack en Swarm
+    show_message "Desplegando $tool_name en Docker Swarm..."
+    run_command "docker stack deploy -c \"$deploy_file\" $tool_name" "Desplegando $tool_name..."
+    
+    if [ $? -eq 0 ]; then
+        show_success "$tool_name instalado correctamente en Docker Swarm"
+
+        # Agregar al registro de componentes instalados
+        INSTALLED_COMPONENTS["$tool_name"]=true
+
+        # Actualizar estado con TODOS los componentes
+        current_components=$(jo -a "${!INSTALLED_COMPONENTS[@]}")
+        update_installation_status "in_progress" "$current_components"
+        
+    else
+        show_error "Error al instalar $tool_name"
+        INSTALLED_COMPONENTS["$tool_name"]=false
+        cleanup 1
+        exit 1
+    fi
+    
+    cd $DOCKER_DIR || {
+        show_error "No se pudo volver al directorio principal $DOCKER_DIR"
+        cleanup 1
+        exit 1
+    }
+}
+
+# Función principal
+main() {
+    show_message "Iniciando la instalación automatizada de herramientas Docker..."
+
+    # Si no se pasó un token, solicitarlo
+    if [ -z "$API_TOKEN" ]; then
+        read -p "Ingrese su token de instalación: " API_TOKEN
+        if [ -z "$API_TOKEN" ]; then
+            show_error "El token no puede estar vacío"
+            cleanup 1
+            exit 1
+        fi
+        
+        # Validar el token solo si no se pasó como parámetro
+        if ! validate_token; then
+            show_error "No se puede continuar con la instalación. Token inválido."
+            cleanup 1
+            exit 1
+        fi
+    fi
+
+    # Registrar el inicio de la instalación
+    register_installation_start
+
+    # Instalar dependencias
+    install_dependencies
+    
+    # Marcar como en progreso
+    current_components=$(jo -a "${!INSTALLED_COMPONENTS[@]}")
+    update_installation_status "started" "$current_components"
+
+    # Inicializar Docker Swarm
+    initialize_docker_swarm
+    
+    # Instalar herramientas de seguridad
+    install_server_tools
+    
+    # Crear redes Docker
+    create_docker_networks
+
+    # Inicializar array de subdominios personalizados con valores predeterminados
+    for i in "${!SELECTED_TOOLS[@]}"; do
+        CUSTOM_SUBDOMAINS[$i]=""
+    done
+
+    # Actualizar estado
+    current_components=$(jo -a "${!INSTALLED_COMPONENTS[@]}")
+    update_installation_status "in_progress" "$current_components"
+
+    # Instalar herramientas Docker seleccionadas en orden específico
+    # Primero instalar servicios de infraestructura (Traefik, Redis, PostgreSQL)
+    # Luego las aplicaciones que dependen de ellos
+    show_message "Instalando servicios en orden de dependencias..."
+    
+    # Orden de instalación: infraestructura primero, aplicaciones después
+    INSTALL_ORDER=("traefik" "redis" "postgres" "portainer" "n8n" "evoapi" "chatwoot")
+    
+    for tool_name in "${INSTALL_ORDER[@]}"; do
+        # Verificar si la herramienta está en la lista de seleccionadas
+        if [[ " ${SELECTED_TOOLS[@]} " =~ " ${tool_name} " ]]; then
+            # Encontrar el subdomain correspondiente
+            default_subdomain=""
+            for j in "${!AVAILABLE_TOOLS[@]}"; do
+                if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
+                    default_subdomain="${DEFAULT_SUBDOMAINS[$j]}"
+                    break
+                fi
+            done
+            
+            # Instalar la herramienta
+            install_docker_tool "$tool_name" "$default_subdomain"
+            
+            # Pausa entre instalaciones para permitir que los servicios se estabilicen
+            if [ "$tool_name" = "postgres" ] || [ "$tool_name" = "redis" ]; then
+                show_message "Esperando a que $tool_name se estabilice..."
+                sleep 15
+            fi
+        fi
+    done
+
+    # Completar la instalación
+    complete_installation
+    
+    show_success "¡Instalación completada!"
+    echo ""
+    echo "Accede a tus servicios en los siguientes URLs:"
+    
+    # Mostrar URLs de los servicios instalados usando los subdominios personalizados
+    for i in "${!SELECTED_TOOLS[@]}"; do
+        tool_name="${SELECTED_TOOLS[$i]}"
+
+        # Encontrar el índice de la herramienta
+        tool_index=-1
+        for j in "${!AVAILABLE_TOOLS[@]}"; do
+            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
+                tool_index=$j
+                break
+            fi
+        done
+
+        if [ $tool_index -ge 0 ]; then
+            # Leer el subdominio personalizado del archivo guardado
+            subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
+            if [ -f "$subdomain_file" ]; then
+                subdomain=$(cat "$subdomain_file")
+            else
+                # Si no existe el archivo, usar el subdominio del array
+                subdomain="${CUSTOM_SUBDOMAINS[$tool_index]}"
+                # Si está vacío, usar el predeterminado
+                if [ -z "$subdomain" ]; then
+                    subdomain="${DEFAULT_SUBDOMAINS[$tool_index]}"
+                fi
+            fi
+
+            echo "- ${tool_name^}: https://$subdomain.$BASE_DOMAIN"
+        fi
+    done
+    
+    echo ""
+    echo "Información de credenciales:"
+    echo "- Contraseña común: $COMMON_PASSWORD"
+    echo "- Clave secreta: $SECRET_KEY"
+    echo ""
+    echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"
+
+    cleanup 0 true
+}
+
+# Ejecutar función principal
+main

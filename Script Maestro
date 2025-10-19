@@ -23,9 +23,7 @@ COMMON_PASSWORD=""
 BASE_DOMAIN=""
 SECRET_KEY=""
 
-# --- URLs COMPLETAS y CORRECTAS (REEMPLAZA ESTAS CON TUS PROPIAS URLS DE GITHUB) ---
-# NOTA: Los enlaces de user-attachments de GitHub son temporales y sensibles.
-# Se recomienda usar tus propios Gists o repositorios.
+# --- URLs COMPLETAS y CORRECTAS (SUBSTITUYA POR SUS PRÓPRIAS URLS ESTABLES) ---
 declare -gA STACK_URLS=(
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
     [evoapi]="https://github.com/user-attachments/files/22956481/evoapi-stack.yml"
@@ -81,7 +79,6 @@ wait_for_service() {
     show_message "Verificando el estado de salud del stack '$stack_name'. Máximo de espera: $max_wait segundos."
 
     while [ $wait_time -lt $max_wait ]; do
-        # Obtiene el estado de réplicas, manejando posibles errores de 'docker service ls'
         local status=$(docker service ls --filter "name=${stack_name}" --format "{{.Replicas}}" 2>/dev/null | head -1)
         
         if [[ "$status" =~ ^[0-9]/[0-9]$ ]]; then
@@ -94,7 +91,6 @@ wait_for_service() {
             fi
         fi
         
-        # Detección temprana de tareas fallidas
         local failed_tasks=$(docker service ps "$stack_name" --filter "desired-state=running" --filter "state=failed" --format "{{.ID}}" 2>/dev/null)
         if [ -n "$failed_tasks" ]; then
             show_error "El servicio '$stack_name' tiene tareas fallidas. Revisando logs para diagnóstico..."
@@ -195,9 +191,9 @@ download_stack_content() {
 }
 
 
-# --- Funciones de Instalación Base y Seguridad ---
+# --- Funciones de Instalación Base y Seguridad (UFW INTEGRADO) ---
 
-# Función NUEVA/EDITADA para instalar Fail2Ban, rkhunter y UFW
+# Función para instalar Fail2Ban, rkhunter y UFW
 install_security_tools() {
     show_message "Instalando herramientas de seguridad (Fail2Ban, rkhunter y UFW)..."
     
@@ -207,7 +203,7 @@ install_security_tools() {
     show_success "Herramientas de seguridad instaladas."
 }
 
-# Función NUEVA/EDITADA para configurar Fail2Ban, rkhunter y UFW
+# Función para configurar Fail2Ban, rkhunter y UFW
 configure_security_tools() {
     show_message "Configurando rkhunter, Fail2Ban y UFW..."
     
@@ -278,7 +274,7 @@ pre_pull_images() {
 initialize_chatwoot_database() {
     show_message "Iniciando base de datos de Chatwoot (Proceso avanzado con FIX)..."
     
-    # FIX: Verificación de Redis (similar al installer.sh, para máxima robustez)
+    # FIX: Verificación de Redis (Verificación activa de dependencias)
     show_message "Verificando que el servicio Redis esté disponible..."
     local redis_service_name="redis_redis-server"
     local redis_container_id=""
@@ -291,7 +287,7 @@ initialize_chatwoot_database() {
         redis_container_id=$(docker ps -q --filter "name=${redis_service_name}" 2>/dev/null | head -1)
         
         if [ -n "$redis_container_id" ]; then
-            # Intenta ejecutar PING dentro del contenedor
+            # Intenta ejecutar PING dentro del contenedor para verificar la salud
             if docker exec "$redis_container_id" redis-cli PING >/dev/null 2>&1; then
                 redis_ready=true
                 break
@@ -302,274 +298,4 @@ initialize_chatwoot_database() {
     done
 
     if [ "$redis_ready" = false ]; then
-        show_error "Redis no está disponible. No se puede iniciar la inicialización de Chatwoot."
-        return 1
-    fi
-    show_success "Redis está listo. Continuando con la inicialización de DB."
-    
-    # 1. Definición del stack temporal para inicializar la DB
-    local init_stack_file="/tmp/chatwoot-init-stack.yml"
-    
-    cat > "$init_stack_file" << EOF_INIT
-version: '3.8'
-
-services:
-  # Base de Datos de Chatwoot (requiere pgvector)
-  chatwoot-postgres:
-    image: pgvector/pgvector:pg16
-    environment:
-      - POSTGRES_DB=chatwoot
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=$COMMON_PASSWORD
-      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
-    volumes:
-      # Montar el volumen en una ruta conocida por el driver 'local'
-      - chatwoot_postgres:/var/lib/postgresql/data
-    deploy:
-      replicas: 1
-      placement: {constraints: [node.role == manager]}
-    networks: [backend]
-
-  # Servicio temporal para ejecutar las migraciones de Rails (WAIT AND CHECK)
-  chatwoot-init:
-    image: chatwoot/chatwoot:latest
-    # FIX: Retardo para esperar a que Postgres inicie y comando de migración
-    command: 
-      - /bin/sh
-      - -c
-      - |
-        echo 'Esperando 15 segundos para que PostgreSQL inicie...'
-        sleep 15
-        echo 'Ejecutando setup inicial de Chatwoot...'
-        bundle exec rails db:chatwoot_prepare
-    environment:
-      - POSTGRES_HOST=chatwoot-postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DATABASE=chatwoot
-      - POSTGRES_USERNAME=postgres
-      - POSTGRES_PASSWORD=$COMMON_PASSWORD
-      - REDIS_URL=redis://redis-server:6379/4
-      - SECRET_KEY_BASE=$SECRET_KEY
-      - RAILS_ENV=production
-      - NODE_ENV=production
-    networks: [backend]
-    depends_on: [chatwoot-postgres]
-    deploy:
-      # CRÍTICO: Asegura que el servicio se detenga después de completar el comando
-      restart_policy: {condition: none}
-      placement: {constraints: [node.role == manager]}
-
-networks:
-  backend: {external: true}
-
-volumes:
-  chatwoot_postgres: {external: true}
-EOF_INIT
-    
-    register_temp_file "$init_stack_file"
-    
-    # 2. Crear volumen de datos (si no existe)
-    local postgres_volume_name="chatwoot_postgres"
-    local postgres_data_path="$DOCKER_DIR/chatwoot/postgres_data"
-    
-    # Eliminar volumen anterior si existe y está "sucio"
-    docker volume rm "$postgres_volume_name" 2>/dev/null
-    mkdir -p "$postgres_data_path"
-    run_command "docker volume create --driver local --opt type=none --opt device=$postgres_data_path --opt o=bind $postgres_volume_name" "Creando volumen persistente para Chatwoot DB..." || return 1
-
-    # 3. Desplegar stack de inicialización
-    run_command "docker stack deploy -c \"$init_stack_file\" chatwoot-init" "Desplegando stack de inicialización temporal..." || return 1
-
-    # 4. Espera por completado del servicio (WAIT AND CHECK - Status Complete)
-    show_message "Esperando hasta 15 minutos (900s) para que la inicialización de Chatwoot complete..."
-    local init_complete=false; local max_wait=900; local wait_time=0
-    
-    while [ $wait_time -lt $max_wait ] && [ "$init_complete" = false ]; do
-        local service_status=$(docker service ps chatwoot-init_chatwoot-init --format "{{.CurrentState}}" --no-trunc 2>/dev/null | head -1)
-        
-        if echo "$service_status" | grep -q "Complete"; then 
-            init_complete=true; show_success "Inicialización de la base de datos completada exitosamente."; break
-        elif echo "$service_status" | grep -q "Failed" || echo "$service_status" | grep -q "Shutdown"; then
-            show_error "La inicialización de la base de datos falló o se cerró inesperadamente."
-            docker service logs chatwoot-init_chatwoot-init --tail 50
-            break
-        fi
-        sleep 10; wait_time=$((wait_time + 10))
-        show_message "Estado actual del inicializador: $service_status. (Tiempo: $wait_time/$max_wait)"
-    done
-    
-    # 5. Limpieza del stack temporal
-    run_command "docker stack rm chatwoot-init" "Limpiando stack temporal de inicialización..."
-    sleep 5 
-
-    # 6. FIX V4.9: Intento robusto de eliminación de volumen
-    show_message "Intentando eliminar el volumen temporal '$postgres_volume_name' de forma robusta..."
-    local volume_removed=false; local attempts=0; local max_attempts=6 
-    while [ "$volume_removed" = false ] && [ $attempts -lt $max_attempts ]; do
-        if docker volume rm "$postgres_volume_name" 2>/dev/null; then
-            show_success "Volumen temporal '$postgres_volume_name' eliminado."
-            volume_removed=true
-        else
-            show_warning "Volumen '$postgres_volume_name' aún en uso. Reintentando en 5s (Intento $((attempts + 1)) de $max_attempts)..."
-            sleep 5
-            attempts=$((attempts + 1))
-        fi
-    done
-    
-    if [ "$init_complete" = true ]; then
-        return 0
-    else
-        show_error "El proceso de inicialización de la base de datos de Chatwoot falló."
-        return 1
-    fi
-}
-
-
-# Función para instalar una herramienta con Docker Swarm
-install_docker_tool() {
-    local tool_name=$1
-    local default_subdomain=$2
-    
-    show_message "Configurando $tool_name..."
-    local tool_dir="$DOCKER_DIR/$tool_name"
-    mkdir -p $tool_dir
-    cd $tool_dir || { show_error "No se pudo acceder al directorio $tool_dir"; cleanup 1; exit 1; }
-    
-    read -p "Ingrese el subdominio para $tool_name [$default_subdomain]: " SUBDOMAIN
-    SUBDOMAIN=${SUBDOMAIN:-$default_subdomain}
-    local full_domain="$SUBDOMAIN.$BASE_DOMAIN"
-    
-    local subdomain_file="$tool_dir/.subdomain"
-    echo "$SUBDOMAIN" > "$subdomain_file"; register_temp_file "$subdomain_file"
-    
-    local stack_file="/tmp/$tool_name-stack.yml"
-    download_stack_content "$tool_name" "$stack_file"
-
-    local deploy_file="$tool_dir/$tool_name-deploy.yml"
-    cp "$stack_file" "$deploy_file"
-    register_temp_file "$deploy_file"
-
-    show_message "Aplicando sanitización de variables en el stack de despliegue..."
-
-    # Reemplazo de variables de seguridad y dominio
-    sed -i "s|REPLACE_PASSWORD|$COMMON_PASSWORD|g" "$deploy_file"
-    sed -i "s|REPLACE_SUBDOMAIN.REPLACE_DOMAIN|$full_domain|g" "$deploy_file"
-    sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$deploy_file"
-    sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$deploy_file"
-    # Reemplazos específicos (mejorados)
-    sed -i "s|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
-    sed -i "s|REDIS_PASSWORD=.*|REDIS_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
-    sed -i "s|DB_POSTGRESDB_PASSWORD=.*|DB_POSTGRESDB_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
-    sed -i "s|RAILS_INBOUND_EMAIL_PASSWORD=.*|RAILS_INBOUND_EMAIL_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
-    sed -i "s|PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
-
-
-    # CORRECCIÓN CRÍTICA DE REDIS V4.7
-    if [ "$tool_name" == "redis" ]; then
-        show_message "Aplicando **corrección crítica de configuración V4.7: Eliminando comando de Redis**."
-        sed -i '/command:/d' "$deploy_file"    
-        # Inyección de variables de entorno para RedisInsight (si aplica)
-        sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD=\$COMMON_PASSWORD\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$deploy_file"
-        show_success "Corrección de Redis V4.7 aplicada."
-    fi
-    
-    # CORRECCIÓN ADICIONAL PARA POSTGRES
-    if [ "$tool_name" == "postgres" ]; then
-        show_message "Aplicando corrección de variable de entorno para PostgreSQL."
-        sed -i "s/POSTGRES_PASSWORD: .*/POSTGRES_PASSWORD: $COMMON_PASSWORD/g" "$deploy_file"
-        show_success "Corrección de PostgreSQL aplicada."
-    fi
-
-
-    # Crea directorios de volúmenes si es necesario
-    local volume_paths=$(grep -oP "device: \K/[^\s]+" "$deploy_file" | sort | uniq)
-    for path in $volume_paths; do mkdir -p "$path"; done
-    
-    # Despliegue inicial de stack
-    run_command "docker stack deploy -c \"$deploy_file\" $tool_name" "Desplegando $tool_name..."
-
-    # Esperar a que Redis y Postgres se estabilicen antes de continuar con dependientes
-    if [ "$tool_name" = "redis" ] || [ "$tool_name" = "postgres" ]; then
-        if ! wait_for_service "$tool_name"; then
-            show_error "El stack $tool_name no se estabilizó correctamente. **FALLO CRÍTICO**."
-            cleanup 1; exit 1
-        fi
-    fi
-    
-    # Proceso especial para Chatwoot (Inicialización de DB)
-    if [ "$tool_name" = "chatwoot" ]; then
-        if initialize_chatwoot_database; then
-            show_success "Base de datos de Chatwoot inicializada. Desplegando stack final."
-            # Despliega el stack de Chatwoot **una segunda vez** para tomar los servicios principales
-            run_command "docker stack deploy -c \"$deploy_file\" $tool_name" "Desplegando $tool_name (Stack Final)..."
-        else
-            show_error "Error crítico al inicializar la base de datos de Chatwoot."; cleanup 1; exit 1
-        fi
-    fi
-
-    cd $DOCKER_DIR || { show_error "No se pudo volver al directorio principal $DOCKER_DIR"; cleanup 1; exit 1; }
-}
-
-# --- Flujo Principal ---
-
-main() {
-    echo -e "\n${GREEN}===========================================${NC}"
-    echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀  ${NC}"
-    echo -e "${GREEN}    (V5.0.0 - SEGURIDAD, ESTABILIDAD Y UFW)   ${NC}"
-    echo -e "${GREEN}===========================================${NC}\n"
-
-    if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
-    mkdir -p $DOCKER_DIR; cd $DOCKER_DIR || { show_error "No se pudo acceder a $DOCKER_DIR"; cleanup 1; exit 1; }
-
-    # 1. Configuración Inicial
-    show_message "Configuración inicial"
-    read -sp "Ingrese la contraseña común para todas las herramientas y DBs: " COMMON_PASSWORD; echo
-    if [ -z "$COMMON_PASSWORD" ]; then show_error "La contraseña no puede estar vacía"; cleanup 1; exit 1; fi
-
-    read -p "Ingrese el dominio base (ejemplo: midominio.com): " BASE_DOMAIN
-    if [ -z "$BASE_DOMAIN" ]; then show_error "El dominio no puede estar vacío"; cleanup 1; exit 1; fi
-
-    DEFAULT_SECRET_KEY=$(generate_random_key)
-    read -p "Ingrese una clave secreta de 32 caracteres (o Enter para usar la generada): " SECRET_KEY
-    SECRET_KEY=${SECRET_KEY:-$DEFAULT_SECRET_KEY}
-    if [ ${#SECRET_KEY} -ne 32 ]; then show_warning "Clave proporcionada no tiene 32 caracteres. Usando la generada."; SECRET_KEY=$DEFAULT_SECRET_KEY; fi
-    show_message "Clave secreta utilizada: $SECRET_KEY"
-
-    env_global_file="$DOCKER_DIR/.env.global"
-    cat > $env_global_file << EOL
-COMMON_PASSWORD=$COMMON_PASSWORD
-BASE_DOMAIN=$BASE_DOMAIN
-SECRET_KEY=$SECRET_KEY
-EOL
-    show_success "Variables de entorno guardadas."
-
-    # 2. Instalación de Seguridad CRÍTICA (Fail2Ban, rkhunter, UFW)
-    install_security_tools
-    configure_security_tools
-    
-    # 3. Inicialización de Docker
-    initialize_docker_swarm
-    create_docker_networks
-    pre_pull_images
-    
-    # 4. Instalación de servicios en orden de dependencias
-    show_message "Instalando servicios en orden de dependencias..."
-    INSTALL_ORDER=("traefik" "redis" "postgres" "portainer" "n8n" "evoapi" "chatwoot")
-    
-    for tool_name in "${INSTALL_ORDER[@]}"; do
-        default_subdomain=""
-        for j in "${!AVAILABLE_TOOLS[@]}"; do
-            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then default_subdomain="${DEFAULT_SUBDOMAINS[$j]}"; break; fi
-        done
-        
-        install_docker_tool "$tool_name" "$default_subdomain"
-    done
-
-    echo ""
-    show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
-    
-    cleanup 0 true
-}
-
-# Ejecutar función principal
-main
+        show_error "Redis no está disponible. No se puede iniciar la inicialización de

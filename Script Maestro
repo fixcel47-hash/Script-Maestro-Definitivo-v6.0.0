@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR DOCKER SWARM MAJORADO (v4.3 - MAESTRO FINAL - VERBOSO)
-# Muestra TODA la salida de los comandos en tiempo real, eliminando el spinner.
-# Utiliza las URLs correctas proporcionadas por el usuario y el FIX de Chatwoot.
+# INSTALADOR DOCKER SWARM MAJORADO (v4.4 - MAESTRO FINAL - ULTRA ROBUSTO)
+# Muestra toda la salida (Verboso) e incluye chequeo de salud robusto para servicios clave.
 # =================================================================================
 
-SCRIPT_VERSION="4.3.0-FINAL-VERBOSE"
+SCRIPT_VERSION="4.4.0-FINAL-ROBUST"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -17,7 +16,6 @@ NC='\033[0m' # No Color
 # Variables de entorno
 DOCKER_DIR="/home/docker"
 SCRIPT_PATH=$(readlink -f "$0")
-SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 TEMP_FILES=()
 DOWNLOAD_TIMEOUT=30
 
@@ -48,7 +46,7 @@ show_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
-# --- Función de Ejecución con Visibilidad TOTAL (MODIFICADA) ---
+# Función de ejecución con visibilidad total
 run_command() {
     local cmd=$1; local msg=$2
     
@@ -56,7 +54,6 @@ run_command() {
     echo -e "${YELLOW}Ejecutando: ${cmd}${NC}"
     echo "--------------------------- INICIO OUTPUT ---------------------------"
 
-    # Ejecuta el comando directamente, mostrando toda la salida
     if ! eval "$cmd"; then
         local exit_status=$?
         echo "--------------------------- FIN OUTPUT ----------------------------"
@@ -69,7 +66,45 @@ run_command() {
     show_success "Comando completado exitosamente."
     return 0
 }
-# (Se elimina la función spinner)
+
+# --- FUNCIÓN DE ESPERA ROBUSTA (NUEVA) ---
+wait_for_service() {
+    local stack_name=$1
+    local max_wait=180 # 3 minutos
+    local wait_time=0
+    show_message "Verificando el estado de salud del stack '$stack_name'. Máximo de espera: $max_wait segundos."
+
+    while [ $wait_time -lt $max_wait ]; do
+        # Obtiene el estado de las réplicas (Ej: 1/1)
+        local status=$(docker service ls --filter "name=${stack_name}" --format "{{.Replicas}}" 2>/dev/null | head -1)
+        
+        if [[ "$status" =~ ^[0-9]/[0-9]$ ]]; then
+            local running=$(echo "$status" | cut -d '/' -f 1)
+            local desired=$(echo "$status" | cut -d '/' -f 2)
+            
+            if [ "$running" = "$desired" ] && [ "$desired" -gt 0 ]; then
+                show_success "Servicio '$stack_name' listo ($running/$desired réplicas)."
+                return 0
+            fi
+        fi
+        
+        # Si el servicio falla o no se estabiliza
+        local failed_tasks=$(docker service ps "$stack_name" --filter "desired-state=running" --filter "state=failed" --format "{{.ID}}" 2>/dev/null)
+        if [ -n "$failed_tasks" ]; then
+            show_error "El servicio '$stack_name' tiene tareas fallidas. Revise los logs a continuación."
+            docker service ps "$stack_name" --no-trunc
+            return 1
+        fi
+        
+        sleep 10
+        wait_time=$((wait_time + 10))
+        show_message "Esperando réplicas estables de '$stack_name': Estado actual $status. (Tiempo: $wait_time/$max_wait)"
+    done
+
+    show_error "El servicio '$stack_name' no se estabilizó después de $max_wait segundos. Revise los logs."
+    docker service ps "$stack_name" --no-trunc
+    return 1
+}
 
 
 cleanup() {
@@ -148,7 +183,7 @@ download_stack_content() {
 }
 
 
-# --- Funciones de Instalación de Dependencias y Seguridad ---
+# --- Instalación de Dependencias y Seguridad (Igual a V4.3) ---
 
 install_dependencies() {
     show_message "Verificando e instalando dependencias (Docker, curl, wget, git, jo)..."
@@ -243,7 +278,7 @@ create_volume_directories() {
 }
 
 
-# --- Inicialización de Chatwoot (Corrección Avanzada) ---
+# --- Inicialización de Chatwoot (Igual a V4.3) ---
 
 initialize_chatwoot_database() {
     show_message "Inicializando base de datos de Chatwoot (Proceso avanzado, FIX garantizado)..."
@@ -312,17 +347,14 @@ EOF
     show_message "Esperando a que el servicio de inicialización de Chatwoot complete su tarea (esto puede tardar varios minutos)..."
     local init_complete=false; local max_wait=900; local wait_time=0
     
-    # Bucle para monitorear el estado del servicio de inicialización
     while [ $wait_time -lt $max_wait ] && [ "$init_complete" = false ]; do
         local service_status=$(docker service ps chatwoot-init_chatwoot-init --format "{{.CurrentState}}" --no-trunc 2>/dev/null | head -1)
         
         show_message "Estado actual del inicializador: $service_status (Esperando $wait_time de $max_wait segundos)"
         
-        if echo "$service_status" | grep -q "Complete"; then 
-            init_complete=true; show_success "Inicialización completada."; break
+        if echo "$service_status" | grep -q "Complete"; then init_complete=true; show_success "Inicialización completada."; break
         elif echo "$service_status" | grep -q "Failed" || echo "$service_status" | grep -q "Shutdown"; then
             show_error "La inicialización de la base de datos falló o se cerró inesperadamente."
-            # Muestra el log del contenedor fallido para diagnóstico
             local failed_container=$(docker service ps -f "desired-state=shutdown" chatwoot-init_chatwoot-init -q --no-trunc | head -1)
             if [ -n "$failed_container" ]; then docker logs "$failed_container"; fi
             break
@@ -332,7 +364,7 @@ EOF
     
     # 5. Limpiar el stack
     run_command "docker stack rm chatwoot-init" "Limpiando stack temporal de inicialización..."
-    sleep 5 # Pequeña espera para que swarm procese el comando
+    sleep 5
     run_command "docker volume rm chatwoot_postgres" "Eliminando volumen temporal..."
     
     if [ "$init_complete" = true ]; then return 0
@@ -390,7 +422,9 @@ install_docker_tool() {
     # CORRECCIÓN DE REDIS
     if [ "$tool_name" == "redis" ]; then
         show_message "Aplicando corrección de sintaxis y contraseña para Redis."
+        # Agrega la contraseña al comando de redis-server
         sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass \$COMMON_PASSWORD --loglevel warning/g" "$deploy_file"
+        # Inyecta variables de entorno en redisinsight
         sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD=\$COMMON_PASSWORD\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$deploy_file"
         show_success "Corrección de Redis aplicada."
     fi
@@ -398,7 +432,18 @@ install_docker_tool() {
     # 4. Crear directorios de volúmenes
     create_volume_directories "$deploy_file" "$tool_name"
     
-    # 5. Tratamiento especial para Chatwoot (Inicialización DB)
+    # 5. Desplegar stack
+    run_command "docker stack deploy -c \"$deploy_file\" $tool_name" "Desplegando $tool_name..."
+
+    # 6. Espera y verificación para servicios críticos
+    if [ "$tool_name" = "redis" ] || [ "$tool_name" = "postgres" ]; then
+        if ! wait_for_service "$tool_name"; then
+            show_error "El stack $tool_name no se estabilizó correctamente. Abortando instalación."
+            cleanup 1; exit 1
+        fi
+    fi
+    
+    # 7. Inicialización de Chatwoot DB (se ejecuta solo si Redis y Postgres están OK)
     if [ "$tool_name" = "chatwoot" ]; then
         if initialize_chatwoot_database; then
             show_success "Base de datos de Chatwoot inicializada para el despliegue final."
@@ -406,10 +451,7 @@ install_docker_tool() {
             show_error "Error crítico al inicializar la base de datos de Chatwoot. Revisar logs detallados arriba."; cleanup 1; exit 1
         fi
     fi
-    
-    # 6. Desplegar stack
-    run_command "docker stack deploy -c \"$deploy_file\" $tool_name" "Desplegando $tool_name..."
-    
+
     cd $DOCKER_DIR || { show_error "No se pudo volver al directorio principal $DOCKER_DIR"; cleanup 1; exit 1; }
 }
 
@@ -418,7 +460,7 @@ install_docker_tool() {
 main() {
     echo -e "\n${GREEN}===========================================${NC}"
     echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀  ${NC}"
-    echo -e "${GREEN}        (V4.3 - VERBOSIDAD TOTAL)          ${NC}"
+    echo -e "${GREEN}        (V4.4 - ULTRA ROBUSTO)             ${NC}"
     echo -e "${GREEN}===========================================${NC}\n"
 
     if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
@@ -462,12 +504,6 @@ EOL
         done
         
         install_docker_tool "$tool_name" "$default_subdomain"
-        
-        # Pausa para estabilización
-        if [ "$tool_name" = "postgres" ] || [ "$tool_name" = "redis" ]; then
-            show_message "Esperando a que $tool_name se estabilice..."
-            sleep 15
-        fi
     done
 
     # 4. Mensaje final y limpieza

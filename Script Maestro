@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR DOCKER SWARM MAJORADO (v4.2 - MAESTRO FINAL)
-# Incluye la lógica robusta de V4.0, la corrección de inicialización de Chatwoot
-# y las URLs de descarga COMPLETAS y correctas proporcionadas por el usuario.
+# INSTALADOR DOCKER SWARM MAJORADO (v4.3 - MAESTRO FINAL - VERBOSO)
+# Muestra TODA la salida de los comandos en tiempo real, eliminando el spinner.
+# Utiliza las URLs correctas proporcionadas por el usuario y el FIX de Chatwoot.
 # =================================================================================
 
-SCRIPT_VERSION="4.2.0-FINAL"
+SCRIPT_VERSION="4.3.0-FINAL-VERBOSE"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -23,7 +23,7 @@ DOWNLOAD_TIMEOUT=30
 
 # -----------------------------------------------
 # Configuracion de URLs para descarga de Stacks
-# ¡URLs COMPLETAS y CORRECTAS tomadas del script original del usuario!
+# URLs COMPLETAS y CORRECTAS
 # -----------------------------------------------
 declare -gA STACK_URLS=(
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
@@ -39,7 +39,6 @@ declare -gA STACK_URLS=(
 AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "postgres" "n8" "evoapi" "chat")
 SELECTED_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
-CUSTOM_SUBDOMAINS=()
 
 
 # --- Funciones de Control y Error ---
@@ -48,6 +47,30 @@ show_message() { echo -e "${BLUE}[INFO]${NC} $1"; }
 show_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+
+# --- Función de Ejecución con Visibilidad TOTAL (MODIFICADA) ---
+run_command() {
+    local cmd=$1; local msg=$2
+    
+    show_message "$msg"
+    echo -e "${YELLOW}Ejecutando: ${cmd}${NC}"
+    echo "--------------------------- INICIO OUTPUT ---------------------------"
+
+    # Ejecuta el comando directamente, mostrando toda la salida
+    if ! eval "$cmd"; then
+        local exit_status=$?
+        echo "--------------------------- FIN OUTPUT ----------------------------"
+        show_error "Comando falló con estado $exit_status."
+        show_error "Comando: ${cmd}"
+        cleanup 1; exit $exit_status
+    fi
+    
+    echo "--------------------------- FIN OUTPUT ----------------------------"
+    show_success "Comando completado exitosamente."
+    return 0
+}
+# (Se elimina la función spinner)
+
 
 cleanup() {
     local exit_code=$1
@@ -64,7 +87,6 @@ cleanup() {
         fi
     fi
     
-    # Autodestrucción del script y limpieza de archivos de despliegue
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
         for tool_name in "${SELECTED_TOOLS[@]}"; do
             local deploy_file="$DOCKER_DIR/$tool_name/$tool_name-deploy.yml"
@@ -95,38 +117,9 @@ trap 'cleanup 1 false; exit 1' SIGHUP SIGINT SIGQUIT SIGTERM ERR
 
 register_temp_file() { local file_path=$1; TEMP_FILES+=("$file_path"); }
 
-spinner() {
-    local pid=$1; local delay=0.1; local spinstr='|/-\'
-    echo -n "Procesando "
-    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
-        local temp=${spinstr#?}; printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}; sleep $delay; printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"; echo -e "${GREEN}[COMPLETADO]${NC}"
-}
-
-run_command() {
-    local cmd=$1; local msg=$2
-    show_message "$msg"
-    # Ejecuta el comando en segundo plano para usar el spinner
-    eval "$cmd" > /dev/null 2>&1 &
-    local cmd_pid=$!
-    spinner $cmd_pid
-    wait $cmd_pid
-    local exit_status=$?
-    
-    if [ $exit_status -ne 0 ]; then
-        show_error "Comando falló con estado $exit_status: $cmd"
-        # Muestra el error real si falla
-        show_error "Salida/Error del comando (detallado): $(eval "$cmd" 2>&1)" 
-        cleanup 1; exit $exit_status
-    fi
-    return $exit_status
-}
-
 generate_random_key() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
 
-# Función de descarga que usa las URLs completas
+# Función de descarga
 download_stack_content() {
     local tool_name=$1
     local local_path=$2
@@ -139,7 +132,6 @@ download_stack_content() {
     
     show_message "Descargando stack de $tool_name desde: $download_url"
 
-    # curl -f (fail), -s (silent), -S (show error), -L (follow redirect)
     if ! curl -fsSL --max-time $DOWNLOAD_TIMEOUT -o "$local_path" "$download_url"; then
         show_error "Fallo al descargar el archivo stack para $tool_name. Código de error: $?"
         cleanup 1; exit 1
@@ -160,10 +152,8 @@ download_stack_content() {
 
 install_dependencies() {
     show_message "Verificando e instalando dependencias (Docker, curl, wget, git, jo)..."
-    # Incluir 'jo' (JSON output) si es necesario para scripts futuros.
-    run_command "apt-get update && apt-get install -y jo" "Actualizando repositorios e instalando 'jo'..."
+    run_command "apt-get update && apt-get install -y jo" "Actualizando repositorios e instalando 'jo' y paquetes de Docker..."
 
-    # Instalar Docker si no está presente
     if ! command -v docker &> /dev/null; then
         show_message "Instalando Docker..."
         run_command "apt-get install -y ca-certificates curl && \
@@ -256,20 +246,14 @@ create_volume_directories() {
 # --- Inicialización de Chatwoot (Corrección Avanzada) ---
 
 initialize_chatwoot_database() {
-    # Función que implementa la inicialización de la DB de Chatwoot en un servicio temporal.
     show_message "Inicializando base de datos de Chatwoot (Proceso avanzado, FIX garantizado)..."
     
-    # 1. Verificar Redis (Requisito)
     local container_id=$(docker ps -q --filter "name=redis_redis-server")
     if [ -z "$container_id" ]; then
         show_error "Redis no está desplegado. Chatwoot requiere que el stack 'redis' esté activo."; return 1
     fi
-    # El resto de la lógica de Redis y PostgreSQL espera está en el script...
-    # [Lógica de espera y creación de stack temporal para db:chatwoot_prepare]
-    
-    # (El cuerpo completo de la función es idéntico a V4.0/4.1, asegurando el FIX)
-    
-    # 2. Crear stack temporal solo para inicializar la DB
+
+    # 1. Crear stack temporal solo para inicializar la DB
     local init_stack_file="/tmp/chatwoot-init-stack.yml"
     cat > "$init_stack_file" << EOF
 version: '3.8'
@@ -318,46 +302,38 @@ EOF
     
     register_temp_file "$init_stack_file"
     
-    # 3. Asegurar el volumen para la inicialización
-    docker volume create --driver local --opt type=none --opt device=/home/docker/chatwoot/postgres_data --opt o=bind chatwoot_postgres >/dev/null 2>&1
+    # 2. Asegurar el volumen para la inicialización
+    run_command "docker volume create --driver local --opt type=none --opt device=/home/docker/chatwoot/postgres_data --opt o=bind chatwoot_postgres" "Creando volumen temporal para la inicialización de Chatwoot DB..."
     
-    # 4. Desplegar el stack de inicialización
+    # 3. Desplegar el stack de inicialización
     run_command "docker stack deploy -c \"$init_stack_file\" chatwoot-init" "Desplegando stack de inicialización temporal..."
 
-    # 5. Esperar PostgreSQL
-    show_message "Esperando a que PostgreSQL inicie..."; local postgres_container_id=""; local pg_ready=false; local pg_attempt=0; local max_pg_wait=60
-    while [ $pg_attempt -lt $max_pg_wait ] && [ -z "$postgres_container_id" ]; do
-        postgres_container_id=$(docker ps -q --filter "name=chatwoot-init_chatwoot-postgres"); if [ -z "$postgres_container_id" ]; then sleep 5; pg_attempt=$((pg_attempt + 1)); fi
-    done
+    # 4. Esperar a que el proceso 'db:chatwoot_prepare' termine
+    show_message "Esperando a que el servicio de inicialización de Chatwoot complete su tarea (esto puede tardar varios minutos)..."
+    local init_complete=false; local max_wait=900; local wait_time=0
     
-    if [ -z "$postgres_container_id" ]; then show_error "No se pudo iniciar PostgreSQL."; docker stack rm chatwoot-init >/dev/null 2>&1; return 1; fi
-
-    show_message "Verificando conexión a PostgreSQL..."
-    while [ $pg_attempt -lt $max_pg_wait ] && [ "$pg_ready" = false ]; do
-        if docker exec "$postgres_container_id" pg_isready -U postgres -h localhost >/dev/null 2>&1; then
-            pg_ready=true; show_success "PostgreSQL está listo."; sleep 10
-        else
-            sleep 5; pg_attempt=$((pg_attempt + 1))
-        fi
-    done
-    if [ "$pg_ready" = false ]; then show_error "PostgreSQL no disponible."; docker stack rm chatwoot-init >/dev/null 2>&1; return 1; fi
-        
-    # 6. Esperar inicialización
-    show_message "Esperando a que el contenedor de inicialización complete 'db:chatwoot_prepare'..."
-    local init_complete=false; local max_wait=600; local wait_time=0
+    # Bucle para monitorear el estado del servicio de inicialización
     while [ $wait_time -lt $max_wait ] && [ "$init_complete" = false ]; do
         local service_status=$(docker service ps chatwoot-init_chatwoot-init --format "{{.CurrentState}}" --no-trunc 2>/dev/null | head -1)
-        if echo "$service_status" | grep -q "Complete"; then init_complete=true; show_success "Inicialización completada."; break
-        elif echo "$service_status" | grep -q "Failed"; then show_error "La inicialización de la base de datos falló."; break
+        
+        show_message "Estado actual del inicializador: $service_status (Esperando $wait_time de $max_wait segundos)"
+        
+        if echo "$service_status" | grep -q "Complete"; then 
+            init_complete=true; show_success "Inicialización completada."; break
+        elif echo "$service_status" | grep -q "Failed" || echo "$service_status" | grep -q "Shutdown"; then
+            show_error "La inicialización de la base de datos falló o se cerró inesperadamente."
+            # Muestra el log del contenedor fallido para diagnóstico
+            local failed_container=$(docker service ps -f "desired-state=shutdown" chatwoot-init_chatwoot-init -q --no-trunc | head -1)
+            if [ -n "$failed_container" ]; then docker logs "$failed_container"; fi
+            break
         fi
         sleep 10; wait_time=$((wait_time + 10))
     done
     
-    # 7. Limpiar el stack
-    show_message "Limpiando stack temporal de inicialización..."
-    docker stack rm chatwoot-init >/dev/null 2>&1
-    sleep 15
-    docker volume rm chatwoot_postgres >/dev/null 2>&1
+    # 5. Limpiar el stack
+    run_command "docker stack rm chatwoot-init" "Limpiando stack temporal de inicialización..."
+    sleep 5 # Pequeña espera para que swarm procese el comando
+    run_command "docker volume rm chatwoot_postgres" "Eliminando volumen temporal..."
     
     if [ "$init_complete" = true ]; then return 0
     else return 1
@@ -385,41 +361,36 @@ install_docker_tool() {
     
     # 2. Obtener Stack File (DESCARGA)
     local stack_file="$tool_dir/$tool_name-stack.yml"
-    download_stack_content "$tool_name" "$stack_file" # Llama a la función de descarga V4.2
+    download_stack_content "$tool_name" "$stack_file"
 
-    # 3. Reemplazar variables (Se usa -deploy.yml para evitar modificar el original descargado)
+    # 3. Reemplazar variables
     local deploy_file="$tool_dir/$tool_name-deploy.yml"
     cp "$stack_file" "$deploy_file"
     register_temp_file "$deploy_file"
 
     show_message "Aplicando sanitización de variables en el stack de despliegue..."
 
-    # Reemplazo de variables generales
+    # Reemplazo de variables generales y específicas
     sed -i "s|REPLACE_PASSWORD|$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|REPLACE_SUBDOMAIN.REPLACE_DOMAIN|$full_domain|g" "$deploy_file"
     sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$deploy_file"
     sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$deploy_file"
     
-    # Reemplazos específicos (para manejar diferentes nombres de variables en los YAML)
     sed -i "s|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|REDIS_PASSWORD=.*|REDIS_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|DB_POSTGRESDB_PASSWORD=.*|DB_POSTGRESDB_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|RAILS_INBOUND_EMAIL_PASSWORD=.*|RAILS_INBOUND_EMAIL_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     
-    # Reemplazo de hosts/URLs
     sed -i "s|N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$SECRET_KEY|g" "$deploy_file"
     sed -i "s/N8N_HOST=.*$/N8N_HOST=$full_domain/g" "$deploy_file"
     sed -i "s|N8N_EDITOR_BASE_URL=.*|N8N_EDITOR_BASE_URL=https://$full_domain|g" "$deploy_file"
-    sed -i "s/HOST=.*$/HOST=$full_domain/g" "$deploy_file" # EvoAPI
+    sed -i "s/HOST=.*$/HOST=$full_domain/g" "$deploy_file"
 
-    # Manejo de casos especiales (CORRECCIONES DE FALLOS ANTERIORES)
+    # CORRECCIÓN DE REDIS
     if [ "$tool_name" == "redis" ]; then
-        show_message "Aplicando **corrección de sintaxis y contraseña** para Redis (FIXED YAML)..."
-        # 1. Agregar la contraseña al comando de redis-server
+        show_message "Aplicando corrección de sintaxis y contraseña para Redis."
         sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass \$COMMON_PASSWORD --loglevel warning/g" "$deploy_file"
-        # 2. Inyectar variables de entorno en redisinsight con la INDENTACIÓN CORRECTA
-        # Nota: La sintaxis de sed debe ser precisa. Usamos una línea de inserción avanzada.
         sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD=\$COMMON_PASSWORD\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$deploy_file"
         show_success "Corrección de Redis aplicada."
     fi
@@ -432,7 +403,7 @@ install_docker_tool() {
         if initialize_chatwoot_database; then
             show_success "Base de datos de Chatwoot inicializada para el despliegue final."
         else
-            show_error "Error crítico al inicializar la base de datos de Chatwoot."; cleanup 1; exit 1
+            show_error "Error crítico al inicializar la base de datos de Chatwoot. Revisar logs detallados arriba."; cleanup 1; exit 1
         fi
     fi
     
@@ -447,14 +418,13 @@ install_docker_tool() {
 main() {
     echo -e "\n${GREEN}===========================================${NC}"
     echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀  ${NC}"
-    echo -e "${GREEN}        (V4.2 - MAESTRO FINAL)             ${NC}"
+    echo -e "${GREEN}        (V4.3 - VERBOSIDAD TOTAL)          ${NC}"
     echo -e "${GREEN}===========================================${NC}\n"
 
-    # 1. Chequeo y Setup
     if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
     mkdir -p $DOCKER_DIR; cd $DOCKER_DIR || { show_error "No se pudo acceder a $DOCKER_DIR"; cleanup 1; exit 1; }
 
-    # 2. Solicitar y Guardar Credenciales
+    # 1. Solicitar y Guardar Credenciales
     show_message "Configuración inicial"
     read -p "Ingrese la contraseña común para todas las herramientas: " COMMON_PASSWORD
     if [ -z "$COMMON_PASSWORD" ]; then show_error "La contraseña no puede estar vacía"; cleanup 1; exit 1; fi
@@ -475,13 +445,13 @@ BASE_DOMAIN=$BASE_DOMAIN
 SECRET_KEY=$SECRET_KEY
 EOL
 
-    # 3. Instalación de Infraestructura y Herramientas
+    # 2. Instalación de Infraestructura y Herramientas
     install_dependencies
     initialize_docker_swarm
     install_server_tools
     create_docker_networks
     
-    # 4. Despliegue de Stacks en orden de dependencia
+    # 3. Despliegue de Stacks en orden de dependencia
     show_message "Instalando servicios en orden de dependencias..."
     INSTALL_ORDER=("traefik" "redis" "postgres" "portainer" "n8n" "evoapi" "chatwoot")
     
@@ -500,7 +470,7 @@ EOL
         fi
     done
 
-    # 5. Mensaje final y limpieza
+    # 4. Mensaje final y limpieza
     echo ""
     show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
     echo ""

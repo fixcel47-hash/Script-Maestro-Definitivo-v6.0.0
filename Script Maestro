@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="1.3.1-AUTONOMA-FINAL"
+SCRIPT_VERSION="1.3.2-AUTONOMA-FINAL"
 
 # --- Colores para mensajes ---
 RED='\033[0;31m'
@@ -18,7 +18,6 @@ BASE_DOMAIN=""
 SECRET_KEY=""
 
 # --- URLs de Stack Hardcodeadas ---
-# Archivos de configuración proporcionados por el usuario
 declare -gA STACK_URLS=(
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
     [chatwoot-init]="https://github.com/user-attachments/files/22988366/chatwoot-init-stack.yml"
@@ -274,9 +273,9 @@ create_volume_directories() {
 }
 
 
-# --- Funciones de Despliegue de Aplicaciones ---
+# --- Funciones de Despliegue de Aplicaciones (CHATWOOT FIX) ---
 
-# Función para inicializar la base de datos de Chatwoot
+# Función para inicializar la base de datos de Chatwoot (FIXED)
 initialize_chatwoot_database() {
     show_message "Inicializando base de datos de Chatwoot..."
     
@@ -303,7 +302,7 @@ initialize_chatwoot_database() {
         show_error "No se pudo descargar el archivo de inicialización de Chatwoot."; return 1
     fi
     
-    # Aplicar sustitución de variables (asumiendo placeholders en el YAML)
+    # Aplicar sustitución de variables 
     sed -i "s|REPLACE_PASSWORD|$COMMON_PASSWORD|g" "$init_stack_file"
     sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$init_stack_file"
     
@@ -312,18 +311,48 @@ initialize_chatwoot_database() {
     if ! docker stack deploy -c "$init_stack_file" chatwoot-init >/dev/null 2>&1; then
         show_error "Error al desplegar el stack de inicialización"; return 1
     fi
+    
+    # 3.1. Esperar a que PostgreSQL esté READY (CRÍTICO FIX)
+    local postgres_container_id=""
+    local max_pg_wait=60 # 5 minutos para que el contenedor inicie y esté listo
+    local pg_attempt=0
+    
+    show_message "Esperando a que el contenedor de PostgreSQL inicie..."
+    while [ $pg_attempt -lt $max_pg_wait ]; do
+        postgres_container_id=$(docker ps -q --filter "name=chatwoot-init_chatwoot-postgres")
+        if [ -n "$postgres_container_id" ]; then
+            # Verificar si pg_isready funciona
+            if docker exec "$postgres_container_id" pg_isready -U postgres -h localhost >/dev/null 2>&1; then
+                show_success "PostgreSQL está listo."
+                sleep 10 # Pausa adicional para estabilidad
+                break
+            fi
+        fi
+        
+        sleep 5; pg_attempt=$((pg_attempt + 1))
+        if [ $pg_attempt -ge $max_pg_wait ]; then
+            show_error "PostgreSQL no estuvo listo para la inicialización. Abortando."
+            docker stack rm chatwoot-init >/dev/null 2>&1
+            return 1
+        fi
+    done
 
     # 4. Esperar a que la inicialización termine (servicio 'chatwoot-init_chatwoot-init')
     local init_complete=false; local max_wait=600; local wait_time=0
     show_message "Esperando a que termine la inicialización de la base de datos (max 10 min)..."
+    
+    # Asegurar que el servicio de inicialización ha sido creado
+    sleep 5 
     
     while [ $wait_time -lt $max_wait ] && [ "$init_complete" = false ]; do
         local service_status=$(docker service ps chatwoot-init_chatwoot-init --format "{{.CurrentState}}" --no-trunc 2>/dev/null | head -1)
         
         if echo "$service_status" | grep -q "Complete"; then init_complete=true; break
         elif echo "$service_status" | grep -q "Failed"; then 
-            show_error "La inicialización de la base de datos falló. Revisar logs."
-            docker service logs chatwoot-init_chatwoot-init --tail 10 2>/dev/null
+            show_error "La inicialización de la base de datos falló."
+            show_message "--- Logs de chatwoot-init (Últimos 20) ---"
+            docker service logs chatwoot-init_chatwoot-init --tail 20 2>/dev/null
+            show_message "------------------------------------------"
             break
         fi
         
@@ -338,6 +367,7 @@ initialize_chatwoot_database() {
     else show_error "La inicialización de la base de datos no se completó"; return 1
     fi
 }
+
 
 # Función para instalar una herramienta con Docker Swarm
 install_docker_tool() {

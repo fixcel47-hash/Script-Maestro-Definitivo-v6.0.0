@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR DOCKER SWARM STANDALONE (V5.1 - OUTPUT DETALLADO)
-# Muestra la salida completa de cada comando, eliminando el spinner y la API.
+# INSTALADOR DOCKER SWARM STANDALONE (V5.0 - SIN API)
+# Combina la interfaz de installer.sh con la robustez de V4.9 (FIX de Chatwoot/Redis/Limpieza).
 # =================================================================================
 
-SCRIPT_VERSION="5.1.0-STANDALONE-DETAILED-OUTPUT"
+SCRIPT_VERSION="5.0.0-STANDALONE-NO-API"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 DOCKER_DIR="/home/docker"
 SCRIPT_PATH=$(readlink -f "$0")
 TEMP_FILES=()
-DOWNLOAD_TIMEOUT=30
+DOWNLOAD_TIMEOUT=30 # Usado para la descarga de stacks
 
 # URLs COMPLETAS y CORRECTAS (Se asume la descarga directa de GitHub)
 declare -gA STACK_URLS=(
@@ -47,8 +47,9 @@ declare -gA INSTALLED_COMPONENTS=(
     [networks]=false
 )
 
+
 # ----------------------------------------------------
-# Funciones de Control y Ejecución (Modificado para mostrar todo)
+# Funciones de Mensajería, Control y Ejecución (Adoptadas de installer.sh/v4.9)
 # ----------------------------------------------------
 
 show_message() { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -57,7 +58,6 @@ show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 register_temp_file() { local file_path=$1; TEMP_FILES+=("$file_path"); }
 generate_random_key() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
-
 
 # Función de limpieza (ROBUSTA V4.9 + Autodestrucción)
 cleanup() {
@@ -87,6 +87,7 @@ cleanup() {
         fi
     fi
     
+    # Si se solicita (en éxito), eliminar archivos de despliegue y autodestrucción
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
         for tool_name in "${SELECTED_TOOLS[@]}"; do
             local deploy_file="$DOCKER_DIR/$tool_name/$tool_name-deploy.yml"
@@ -119,33 +120,52 @@ EOF_SD
 
 # Configurar trampas para señales para limpiar antes de salir
 trap 'cleanup 1 false' SIGHUP SIGINT SIGQUIT SIGTERM
-trap 'cleanup 1 false' ERR
+trap 'cleanup 1 false' ERR # El trap ERR debe estar después de la definición de cleanup
 
-# FUNCIÓN MODIFICADA: Ejecuta comandos mostrando TODO el output
+# Función para animación de espera (DE installer.sh)
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
+    echo -n "Procesando "
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+    echo -e "${GREEN}[COMPLETADO]${NC}"
+}
+
+# Función para ejecutar comandos mostrando animación de espera (DE installer.sh)
 run_command() {
     local cmd=$1
     local msg=$2
     
     show_message "$msg"
-    echo -e "${YELLOW}Ejecutando: ${cmd}${NC}"
-    echo "--------------------------- INICIO OUTPUT ---------------------------"
-
-    # Ejecuta el comando directamente y muestra la salida en tiempo real
-    if ! eval "$cmd"; then
-        local exit_status=$?
-        echo "--------------------------- FIN OUTPUT ----------------------------"
-        show_error "Comando falló con estado $exit_status."
-        show_error "Comando: ${cmd}"
-        cleanup 1 # Llama a cleanup y sale con el estado de error
+    # Ejecuta el comando en un subshell en segundo plano, con logs redireccionados
+    eval "$cmd" > /tmp/installer_cmd_log_$$ 2>&1 &
+    local cmd_pid=$!
+    spinner $cmd_pid
+    wait $cmd_pid
+    local exit_status=$?
+    
+    # Si el comando falla, mostrar logs (desde /tmp/installer_cmd_log_$$)
+    if [ $exit_status -ne 0 ]; then
+        show_error "Comando falló con estado $exit_status: $cmd"
+        show_error "Logs del comando (últimas 10 líneas):"
+        cat /tmp/installer_cmd_log_$$ | tail -n 10
+        rm -f /tmp/installer_cmd_log_$$
+        cleanup 1
     fi
     
-    echo "--------------------------- FIN OUTPUT ----------------------------"
-    show_success "Comando completado exitosamente."
-    return 0
+    rm -f /tmp/installer_cmd_log_$$
+    return $exit_status
 }
 
-
-# Función de descarga (CURL DIRECTO)
+# Función de descarga (RESTAURADA A CURL DIRECTO V4.9)
 download_stack_content() {
     local tool_name=$1
     local local_path=$2
@@ -158,8 +178,10 @@ download_stack_content() {
     
     show_message "Descargando stack de $tool_name desde: $download_url"
 
-    # Usamos run_command para mostrar el proceso de curl también
-    run_command "curl -fsSL --progress-bar --max-time $DOWNLOAD_TIMEOUT -o \"$local_path\" \"$download_url\"" "Descargando archivo stack para $tool_name..."
+    if ! curl -fsSL --max-time $DOWNLOAD_TIMEOUT -o "$local_path" "$download_url"; then
+        show_error "Fallo al descargar el archivo stack para $tool_name. Código de error: $?"
+        cleanup 1
+    fi
     
     if [ ! -s "$local_path" ]; then
         show_error "El archivo descargado está vacío o no existe. La URL es incorrecta o inaccesible."
@@ -176,6 +198,7 @@ download_stack_content() {
 # Funciones de Infraestructura
 # ----------------------------------------------------
 
+# Instalar dependencias (basado en installer.sh)
 install_dependencies() {
     show_message "Verificando e instalando dependencias..."
     
@@ -195,6 +218,7 @@ install_dependencies() {
     INSTALLED_COMPONENTS["dependencies"]=true
 }
 
+# Inicializar Docker Swarm si no está activo
 initialize_docker_swarm() {
     show_message "Verificando estado de Docker Swarm..."
     if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
@@ -204,6 +228,7 @@ initialize_docker_swarm() {
     fi
 }
 
+# Crear redes de Docker para Swarm
 create_docker_networks() {
     show_message "Creando redes Docker para Swarm..."
     if ! docker network ls 2>/dev/null | grep -q "frontend"; then
@@ -238,7 +263,6 @@ wait_for_service() {
         local failed_tasks=$(docker service ps "$stack_name" --filter "desired-state=running" --filter "state=failed" --format "{{.ID}}" 2>/dev/null)
         if [ -n "$failed_tasks" ]; then
             show_error "El servicio '$stack_name' tiene tareas fallidas. Revisando logs para diagnóstico..."
-            # Muestra el log directamente al usuario
             docker service ps "$stack_name" --no-trunc
             if [ "$stack_name" == "redis" ]; then
                 show_message "Extrayendo logs del servicio redis_redis-server fallido..."
@@ -332,13 +356,11 @@ EOF_INIT
         elif echo "$service_status" | grep -q "Failed" || echo "$service_status" | grep -q "Shutdown"; then
             show_error "La inicialización de la base de datos falló o se cerró inesperadamente."
             show_message "Extrayendo logs del servicio fallido chatwoot-init_chatwoot-init para diagnóstico..."
-            # Muestra el log directamente al usuario
             docker service logs chatwoot-init_chatwoot-init --tail 50
             break
         fi
         
         sleep 10; wait_time=$((wait_time + 10))
-        show_message "Estado actual del inicializador: $service_status (Esperando $wait_time de $max_wait segundos)"
     done
     
     # 4. Limpiar stack temporal
@@ -371,13 +393,15 @@ install_docker_tool() {
     show_message "Configurando $tool_name..."
     local tool_dir="$DOCKER_DIR/$tool_name"
     mkdir -p $tool_dir
-    cd $tool_dir || { show_error "No se pudo acceder al directorio $tool_dir"; cleanup 1; }
+    cd $tool_dir || { show_error "No se pudo acceder al directorio $tool_dir"; cleanup 1; exit 1; }
     
+    # Determinar el índice
     local tool_index=-1
     for i in "${!AVAILABLE_TOOLS[@]}"; do
         if [ "${AVAILABLE_TOOLS[$i]}" = "$tool_name" ]; then tool_index=$i; break; fi
     done
     
+    # Solicitar subdominio
     read -p "Ingrese el subdominio para $tool_name [$default_subdomain]: " SUBDOMAIN
     SUBDOMAIN=${SUBDOMAIN:-$default_subdomain}
 
@@ -394,6 +418,7 @@ install_docker_tool() {
 
     show_message "Aplicando sanitización de variables en el stack de despliegue..."
     
+    # Reemplazo de variables (incluye sanitización V4.9)
     sed -i "s|REPLACE_PASSWORD|$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|REPLACE_SUBDOMAIN|$SUBDOMAIN|g" "$deploy_file"
     sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$deploy_file"
@@ -429,13 +454,13 @@ install_docker_tool() {
         show_message "Chatwoot detectado - Ejecutando inicialización de base de datos..."
         
         if ! docker service ls | grep -q "redis_redis"; then
-            show_error "Redis no está desplegado. Chatwoot requiere su stack."; cleanup 1;
+            show_error "Redis no está desplegado. Chatwoot requiere su stack."; cleanup 1; exit 1
         fi
         
         if initialize_chatwoot_database; then
             show_success "Base de datos de Chatwoot inicializada para el despliegue final."
         else
-            show_error "Error crítico al inicializar la base de datos de Chatwoot."; cleanup 1;
+            show_error "Error crítico al inicializar la base de datos de Chatwoot."; cleanup 1; exit 1
         fi
         
         # Desplegar el stack final de Chatwoot
@@ -448,14 +473,14 @@ install_docker_tool() {
     # Esperar a que los servicios de infraestructura se estabilicen
     if [ "$tool_name" = "redis" ] || [ "$tool_name" = "postgres" ]; then
         if ! wait_for_service "$tool_name"; then
-            show_error "El stack $tool_name no se estabilizó correctamente. **FALLO CRÍTICO.**"; cleanup 1;
+            show_error "El stack $tool_name no se estabilizó correctamente. **FALLO CRÍTICO.**"; cleanup 1; exit 1
         fi
     fi
 
     show_success "$tool_name instalado correctamente en Docker Swarm"
     INSTALLED_COMPONENTS["$tool_name"]=true
     
-    cd $DOCKER_DIR || { show_error "No se pudo volver al directorio principal $DOCKER_DIR"; cleanup 1; }
+    cd $DOCKER_DIR || { show_error "No se pudo volver al directorio principal $DOCKER_DIR"; cleanup 1; exit 1; }
 }
 
 
@@ -464,20 +489,21 @@ install_docker_tool() {
 # ----------------------------------------------------
 main() {
     echo -e "\n${GREEN}===========================================${NC}"
-    echo -e "${GREEN}  🚀 INSTALADOR DOCKER STANDALONE (V5.1) 🚀  ${NC}"
-    echo -e "${GREEN}  (Modo Verbose: Muestra toda la salida)    ${NC}"
+    echo -e "${GREEN}  🚀 INSTALADOR DOCKER STANDALONE (V5.0) 🚀  ${NC}"
+    echo -e "${GREEN}  (Sin integración API)                      ${NC}"
     echo -e "${GREEN}===========================================${NC}\n"
 
     if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
     mkdir -p $DOCKER_DIR; cd $DOCKER_DIR || { show_error "No se pudo acceder a $DOCKER_DIR"; cleanup 1; exit 1; }
 
     show_message "Configuración inicial"
+    # Usar read -sp para ocultar la contraseña (mejor seguridad)
     read -sp "Ingrese la contraseña común para todas las herramientas: " COMMON_PASSWORD
-    echo
-    if [ -z "$COMMON_PASSWORD" ]; then show_error "La contraseña no puede estar vacía"; cleanup 1; exit 1; }
+    echo # Nueva línea después de la contraseña oculta
+    if [ -z "$COMMON_PASSWORD" ]; then show_error "La contraseña no puede estar vacía"; cleanup 1; exit 1; fi
 
     read -p "Ingrese el dominio base (ejemplo: midominio.com): " BASE_DOMAIN
-    if [ -z "$BASE_DOMAIN" ]; then show_error "El dominio no puede estar vacío"; cleanup 1; exit 1; }
+    if [ -z "$BASE_DOMAIN" ]; then show_error "El dominio no puede estar vacío"; cleanup 1; exit 1; fi
 
     DEFAULT_SECRET_KEY=$(generate_random_key)
     read -p "Ingrese una clave secreta de 32 caracteres (o Enter para usar la generada): " SECRET_KEY
@@ -512,6 +538,7 @@ EOL
     echo ""
     show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
 
+    # Mostrar URLs de acceso
     echo "Accede a tus servicios en los siguientes URLs:"
     
     for i in "${!SELECTED_TOOLS[@]}"; do
@@ -530,6 +557,7 @@ EOL
             if [ -f "$subdomain_file" ]; then
                 subdomain=$(cat "$subdomain_file")
             else
+                # Fallback por si el archivo .subdomain se borró
                  subdomain="${CUSTOM_SUBDOMAINS[$tool_index]:-${DEFAULT_SUBDOMAINS[$tool_index]}}"
             fi
 

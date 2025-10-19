@@ -3,6 +3,7 @@
 # INSTALADOR UNIFICADO DOCKER SWARM (v4.0.0 - MAESTRO FINAL KHUNTER)
 # Autor: Adaptado y corregido por Gemini AI (basado en Queen Novedad / Khunter)
 # Objetivo: Instalación robusta de stack Docker Swarm (Traefik, Portainer, Redis, Postgres, n8n, EvoAPI y Chatwoot)
+# CORRECCIÓN CRÍTICA: Se añadió el procesamiento de archivos YAML (sed) dentro de deploy_stack
 # =================================================================================
 
 SCRIPT_VERSION="4.0.0-FINAL"
@@ -29,7 +30,8 @@ AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwo
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "db" "n8" "api" "chat")
 
 # URLs para descargar los archivos docker-compose/stack.yml
-# NOTA: DEBES REEMPLAZAR ESTAS URLS POR LOS ENLACES CRUDOS (RAW) DE TU REPO DE GITHUB.
+# NOTA: DEBES REEMPLAZAR ESTAS URLS POR LOS ENLACES 
+# CRUDOS (RAW) DE TU REPO DE GITHUB.
 declare -gA STACK_URLS=(
     [traefik]="https://github.com/user-attachments/files/22956506/traefik-stack.yml"
     [portainer]="https://github.com/user-attachments/files/22956492/portainer-stack.yml"
@@ -119,7 +121,6 @@ validate_prerequisites() {
 
 configure_variables() {
     show_message "Configuración de variables de entorno y credenciales."
-    
     read_input "Ingrese el dominio base (ej. midominio.com)" "" BASE_DOMAIN
     read_input "Ingrese la contraseña común para todos los servicios (ej. p4ssw0rdS3gur0)" "$(openssl rand -base64 12)" COMMON_PASSWORD
     read_input "Ingrese la clave secreta única (ej. 3ncrYptK3y)" "$(openssl rand -base64 24)" SECRET_KEY
@@ -212,6 +213,10 @@ initialize_chatwoot_database() {
     curl -fsSL --connect-timeout $DOWNLOAD_TIMEOUT "${STACK_URLS[chatwoot-init]}" -o "$temp_file"
     TEMP_FILES+=("$temp_file")
     
+    # INYECCIÓN DE VARIABLES EN EL STACK DE INICIALIZACIÓN
+    show_message "Inyectando variables y credenciales al stack de inicialización de Chatwoot..."
+    sed -i "s|REPLACE_COMMON_PASSWORD|$COMMON_PASSWORD|g" "$temp_file"
+    
     show_message "Desplegando stack temporal '$init_stack_name' para la base de datos..."
     docker stack deploy -c "$temp_file" "$init_stack_name"
     
@@ -230,7 +235,6 @@ initialize_chatwoot_database() {
     show_message "Ejecutando la inicialización (db:setup) dentro del contenedor $init_container_id..."
     
     # El comando setup ejecuta 'rails db:setup', que inicializa la DB.
-    # El status check asegura que se corrió la migración, no importa si falla el exit code final
     docker service logs "${init_stack_name}_chatwoot-setup" &
     if ! docker container exec -t "$init_container_id" /bin/bash -c "RAILS_ENV=production bundle exec rails db:setup"; then
         show_warning "El comando db:setup finalizó con un código de error, pero el log de salida se usará para confirmar el éxito."
@@ -240,10 +244,9 @@ initialize_chatwoot_database() {
     show_message "Eliminando el stack temporal '$init_stack_name'..."
     docker stack rm "$init_stack_name"
     show_success "Stack temporal '$init_stack_name' eliminado."
-
-    # 4. CORRECCIÓN CRÍTICA V4.9: Eliminar el volumen de datos de la inicialización de forma robusta
+    
+    # 4. CORRECCIÓN CRÍTICA: Eliminar el volumen de datos de la inicialización de forma robusta
     show_message "Intentando eliminar el volumen temporal '$postgres_volume_name' de forma robusta..."
-    # Se añade un bucle para esperar la liberación del volumen si el desmontaje de la pila es lento
     local attempts=0
     local max_attempts=5
     local success=0
@@ -265,12 +268,18 @@ initialize_chatwoot_database() {
     fi
 
     show_success "Base de datos de Chatwoot inicializada para el despliegue final."
-
+    
     # 5. Desplegar el stack FINAL de Chatwoot
     local final_deploy_file="$DOCKER_DIR/$final_stack_name/${final_stack_name}-deploy.yml"
     curl -fsSL --connect-timeout $DOWNLOAD_TIMEOUT "${STACK_URLS[chatwoot]}" -o "$final_deploy_file"
     TEMP_FILES+=("$final_deploy_file")
     
+    show_message "Inyectando variables al stack final de Chatwoot..."
+    sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$final_deploy_file"
+    sed -i "s|REPLACE_SUBDOMAIN|${CUSTOM_SUBDOMAINS[chatwoot]}|g" "$final_deploy_file"
+    sed -i "s|REPLACE_COMMON_PASSWORD|$COMMON_PASSWORD|g" "$final_deploy_file"
+    sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$final_deploy_file"
+
     show_message "Desplegando chatwoot (Stack Final: $final_stack_name)..."
     docker stack deploy -c "$final_deploy_file" "$final_stack_name"
     
@@ -292,7 +301,36 @@ deploy_stack() {
     fi
     TEMP_FILES+=("$stack_file")
 
-    # 2. Despliegue del Stack
+    # 2. PROCESAMIENTO CRÍTICO DEL ARCHIVO YAML (INYECCIÓN DE VARIABLES Y CORRECCIONES)
+    show_message "Aplicando configuración y credenciales a $tool_name-stack.yml..."
+
+    # a) Reemplazo global de variables
+    sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$stack_file"
+    sed -i "s|REPLACE_SUBDOMAIN|${CUSTOM_SUBDOMAINS[$tool_name]}|g" "$stack_file"
+    sed -i "s|REPLACE_COMMON_PASSWORD|$COMMON_PASSWORD|g" "$stack_file"
+    sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$stack_file"
+
+    # b) Correcciones específicas por herramienta
+    if [ "$tool_name" == "redis" ]; then
+        show_message "Aplicando corrección de comando y volumen para Redis..."
+        # 1. Agrega la contraseña al comando de ejecución (Soluciona el error 'wrong number of arguments')
+        sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass $COMMON_PASSWORD --loglevel warning/g" "$stack_file"
+        # 2. Asegura la definición de variables en RedisInsight
+        sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD='$COMMON_PASSWORD'\n      - REDIS_PASSWORD='$COMMON_PASSWORD'' "$stack_file"
+        # NOTA: Los problemas de volumen deben corregirse directamente en el YML del repo, usando Named Volume.
+    fi
+
+    if [ "$tool_name" == "evoapi" ]; then
+        show_message "Aplicando corrección de credenciales para EvoAPI..."
+        # 1. Inyecta la contraseña directamente en la DATABASE_URL (Soluciona el error P1000)
+        sed -i "s/postgres:\${COMMON_PASSWORD}/postgres:$COMMON_PASSWORD/g" "$stack_file"
+        # 2. Asegura que la DB de EvoAPI tenga la contraseña
+        sed -i "s/\(POSTGRES_PASSWORD=\).*/\1$COMMON_PASSWORD/g" "$stack_file"
+    fi
+
+    show_success "Configuración aplicada."
+    
+    # 3. Despliegue del Stack
     docker stack deploy -c "$stack_file" "$tool_name"
     
     if [ $? -ne 0 ]; then
@@ -301,7 +339,7 @@ deploy_stack() {
     fi
     show_success "Stack $tool_name desplegado."
     
-    # 3. Post-instalación (esperas para estabilidad)
+    # 4. Post-instalación (esperas para estabilidad)
     if [ "$tool_name" == "redis" ] || [ "$tool_name" == "postgres" ]; then
         show_message "Esperando a que $tool_name se estabilice (15 segundos)..."
         sleep 15

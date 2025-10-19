@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =================================================================================
 # INSTALADOR DOCKER SWARM MAJORADO (v5.4.5 - FIX: ESCAPING YAML EN COMANDO CHATWOOT)
-# Arreglo del fallo crítico de sintaxis 'yaml: line 22: found unknown escape character'.
+# Arreglo del fallo crítico de sintaxis 'yaml: line 22: found unknown escape character' y DB Health Check.
 # =================================================================================
 
 SCRIPT_VERSION="5.4.5-FINAL-YAML-ESCAPE-FIX"
@@ -476,57 +476,3 @@ EOL
             if initialize_chatwoot_database; then
                 show_success "Base de datos de Chatwoot inicializada. Desplegando stack principal..."
                 install_docker_tool "$tool_name" "$default_subdomain"
-            else
-                show_error "Error crítico al inicializar la base de datos de Chatwoot. Abortando."; cleanup 1; exit 1
-            fi
-        else
-            install_docker_tool "$tool_name" "$default_subdomain"
-        fi
-    done
-
-    echo ""
-    show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
-    
-    finalize_installation
-}
-
-finalize_installation() {
-    echo ""
-    show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
-    echo ""
-    echo "Accede a tus servicios en los siguientes URLs:"
-    
-    local INSTALL_ORDER=("traefik" "redis" "postgres" "portainer" "n8n" "evoapi" "chatwoot")
-    
-    for i in "${!INSTALL_ORDER[@]}"; do
-        tool_name="${INSTALL_ORDER[$i]}"
-        subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
-        
-        local default_subdomain=""
-        for j in "${!AVAILABLE_TOOLS[@]}"; do
-            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then default_subdomain="${DEFAULT_SUBDOMAINS[$j]}"; break; end
-        done
-
-        if [ -f "$subdomain_file" ]; then
-            subdomain=$(cat "$subdomain_file")
-        else
-            subdomain="$default_subdomain"
-        fi
-
-        TOOL_NAME_CAPITALIZED=$(echo "$tool_name" | awk '{print toupper(substr($0,1,1))tolower(substr($0,2))}')
-        
-        echo "- ${TOOL_NAME_CAPITALIZED}: https://$subdomain.$BASE_DOMAIN"
-    done
-    
-    echo ""
-    echo "Información de credenciales:"
-    echo "- Contraseña común: $COMMON_PASSWORD"
-    echo "- Clave secreta: $SECRET_KEY"
-    echo ""
-    echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"
-    
-    cleanup 0 true
-}
-
-# Ejecutar función principal
-main

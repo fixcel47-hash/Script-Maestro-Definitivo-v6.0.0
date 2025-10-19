@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR DOCKER SWARM MAJORADO (v4.9 - FINAL SIN ERRORES)
-# FIX: Redes creadas antes de Traefik.
-# FIX: Configuración de Redis sin comando.
-# FIX: Inicialización de Chatwoot DB robusta y con limpieza de volumen.
+# INSTALADOR DOCKER SWARM MAJORADO (v5.0.0 - SEGURIDAD Y ESTABILIDAD FINAL)
+# Incluye: Fail2Ban y rkhunter.
+# FIX: Redes, Redis, y Inicialización de Chatwoot DB (robusta y con limpieza).
 # =================================================================================
 
-SCRIPT_VERSION="4.9.0-FINAL-ROBUST-CLEANUP-FIX"
+SCRIPT_VERSION="5.0.0-FINAL-SEC-ROBUST"
 
 # --- Colores para mensajes ---
 RED='\033[0;31m'
@@ -54,12 +53,11 @@ run_command() {
     echo -e "${YELLOW}Ejecutando: ${cmd}${NC}"
     echo "--------------------------- INICIO OUTPUT ---------------------------"
 
-    # Captura la salida del comando y el estado de salida
     local output
     output=$(eval "$cmd" 2>&1)
     local exit_status=$?
     
-    echo "$output" # Mostrar la salida capturada
+    echo "$output"
 
     echo "--------------------------- FIN OUTPUT ----------------------------"
     
@@ -121,17 +119,14 @@ cleanup() {
     
     echo -e "${BLUE}[INFO]${NC} Realizando limpieza antes de salir..."
     
-    # Intento de limpieza robusta en caso de fallo
     if [ $exit_code -ne 0 ]; then
         show_warning "Fallo detectado. Intentando remover stacks para evitar conflictos futuros..."
         for tool_name in "${AVAILABLE_TOOLS[@]}"; do
              docker stack rm "$tool_name" 2>/dev/null
         done
-        # Remover stack temporal de inicialización
         docker stack rm chatwoot-init 2>/dev/null
         sleep 5
         
-        # Intentar remover el volumen temporal de Chatwoot en caso de fallo.
         show_warning "Intentando remover volumen 'chatwoot_postgres' fallido."
         docker volume rm chatwoot_postgres 2>/dev/null
         
@@ -143,9 +138,7 @@ cleanup() {
         fi
     fi
     
-    # Lógica de eliminación de archivos de despliegue y auto-destrucción
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
-        # Eliminar archivos .yml de despliegue en directorios de herramientas
         for tool_name in "${AVAILABLE_TOOLS[@]}"; do
             local deploy_file="$DOCKER_DIR/$tool_name/$tool_name-deploy.yml"
             if [ -f "$deploy_file" ]; then rm -f "$deploy_file"; fi
@@ -161,7 +154,6 @@ cleanup() {
     fi
 }
 
-# La captura de error (trap) llama a cleanup con código 1.
 trap 'cleanup 1 false; exit 1' SIGHUP SIGINT SIGQUIT SIGTERM ERR
 
 register_temp_file() { local file_path=$1; TEMP_FILES+=("$file_path"); }
@@ -197,7 +189,38 @@ download_stack_content() {
 }
 
 
-# --- Funciones de Inicialización ---
+# --- Funciones de Instalación Base ---
+
+# Función NUEVA para instalar Fail2Ban y rkhunter
+install_security_tools() {
+    show_message "Instalando herramientas de seguridad (Fail2Ban y rkhunter)..."
+    
+    run_command "apt update && apt install -y fail2ban rkhunter curl wget" "Actualizando paquetes e instalando dependencias de seguridad..."
+    
+    show_success "Herramientas de seguridad instaladas."
+}
+
+# Función NUEVA para configurar Fail2Ban y rkhunter
+configure_security_tools() {
+    show_message "Configurando rkhunter y Fail2Ban..."
+    
+    # 1. Configuración de rkhunter
+    run_command "rkhunter --update" "Actualizando base de datos de rkhunter..."
+    run_command "rkhunter --propcheck" "Comprobando propiedades de archivos (puede tomar tiempo)..."
+    show_message "Para ejecutar un chequeo completo de rkhunter, use: rkhunter -c --rwo"
+    
+    # 2. Configuración de Fail2Ban
+    # Crear un archivo de configuración local para evitar ser sobrescrito
+    run_command "cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local" "Creando archivo de configuración local de Fail2Ban..."
+    
+    # Habilitar y asegurar que el servicio esté corriendo
+    run_command "systemctl enable fail2ban" "Habilitando servicio Fail2Ban..."
+    run_command "systemctl start fail2ban" "Iniciando servicio Fail2Ban..."
+    
+    show_success "rkhunter y Fail2Ban configurados y activos."
+}
+
+
 initialize_docker_swarm() {
     show_message "Verificando estado de Docker Swarm..."
     if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
@@ -226,12 +249,13 @@ pre_pull_images() {
     show_message "Pre-descargando imágenes críticas para evitar fallos de red/timeout..."
     local images=("redis:latest" "pgvector/pgvector:pg16" "chatwoot/chatwoot:latest" "traefik:v2.11")
     for img in "${images[@]}"; do
-        run_command "docker pull $img" "Descargando imagen $img..." || continue # Continuar si una imagen falla
+        run_command "docker pull $img" "Descargando imagen $img..." || continue
     done
 }
 
 
-# --- Inicialización de Chatwoot ---
+# --- Función CRÍTICA de Inicialización de Chatwoot DB (con FIX) ---
+
 initialize_chatwoot_database() {
     show_message "Iniciando base de datos de Chatwoot (Proceso avanzado con FIX)..."
     
@@ -261,7 +285,7 @@ services:
   # Servicio temporal para ejecutar las migraciones de Rails
   chatwoot-init:
     image: chatwoot/chatwoot:latest
-    # FIX: Añadir un retardo de 15 segundos y usar el comando correcto de inicialización
+    # FIX: Retardo de 15 segundos para esperar a que Postgres inicie
     command: 
       - /bin/sh
       - -c
@@ -291,7 +315,6 @@ networks:
   backend: {external: true}
 
 volumes:
-  # Definición del volumen que será creado externamente
   chatwoot_postgres: {external: true}
 EOF_INIT
     
@@ -301,10 +324,7 @@ EOF_INIT
     local postgres_volume_name="chatwoot_postgres"
     local postgres_data_path="$DOCKER_DIR/chatwoot/postgres_data"
     
-    # Eliminar volumen si ya existe (para reintentos limpios)
     docker volume rm "$postgres_volume_name" 2>/dev/null
-    
-    # Crear la ruta local y el volumen
     mkdir -p "$postgres_data_path"
     run_command "docker volume create --driver local --opt type=none --opt device=$postgres_data_path --opt o=bind $postgres_volume_name" "Creando volumen persistente para Chatwoot DB..." || return 1
 
@@ -331,7 +351,7 @@ EOF_INIT
     
     # 4. Limpieza del stack temporal
     run_command "docker stack rm chatwoot-init" "Limpiando stack temporal de inicialización..."
-    sleep 5 # Dar tiempo al swarm para detener los servicios
+    sleep 5 
 
     # 5. FIX V4.9: Intento robusto de eliminación de volumen
     show_message "Intentando eliminar el volumen temporal '$postgres_volume_name' de forma robusta..."
@@ -382,13 +402,11 @@ install_docker_tool() {
 
     show_message "Aplicando sanitización de variables en el stack de despliegue..."
 
-    # Reemplazo de variables generales
     sed -i "s|REPLACE_PASSWORD|$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|REPLACE_SUBDOMAIN.REPLACE_DOMAIN|$full_domain|g" "$deploy_file"
     sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$deploy_file"
     sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$deploy_file"
     
-    # Reemplazo específico de variables de entorno (más seguro)
     sed -i "s|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|REDIS_PASSWORD=.*|REDIS_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|DB_POSTGRESDB_PASSWORD=.*|DB_POSTGRESDB_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
@@ -396,23 +414,17 @@ install_docker_tool() {
     sed -i "s|PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
 
 
-    # CORRECCIÓN CRÍTICA DE REDIS
+    # CORRECCIÓN CRÍTICA DE REDIS V4.7
     if [ "$tool_name" == "redis" ]; then
         show_message "Aplicando **corrección crítica de configuración V4.7: Eliminando comando de Redis**."
-        
-        # 1. Eliminar cualquier línea que modifique el 'command' de redis-server (causa el fallo)
         sed -i '/command:/d' "$deploy_file"    
-        
-        # 2. Inyecta variables de entorno en redisinsight
         sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD=\$COMMON_PASSWORD\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$deploy_file"
-        
         show_success "Corrección de Redis V4.7 aplicada."
     fi
     
     # CORRECCIÓN ADICIONAL PARA POSTGRES
     if [ "$tool_name" == "postgres" ]; then
         show_message "Aplicando corrección de variable de entorno para PostgreSQL."
-        # Asegurar que la variable se use correctamente si el yml la define como literal
         sed -i "s/POSTGRES_PASSWORD: .*/POSTGRES_PASSWORD: $COMMON_PASSWORD/g" "$deploy_file"
         show_success "Corrección de PostgreSQL aplicada."
     fi
@@ -432,13 +444,9 @@ install_docker_tool() {
         fi
     fi
     
-    # Lógica CRÍTICA de inicialización para Chatwoot
     if [ "$tool_name" = "chatwoot" ]; then
-        # La inicialización debe ocurrir DESPUÉS de que Redis y Postgres estén desplegados (y listos)
         if initialize_chatwoot_database; then
             show_success "Base de datos de Chatwoot inicializada. Desplegando stack final."
-            
-            # Re-desplegar el stack final de chatwoot para que use la DB inicializada
             run_command "docker stack deploy -c \"$deploy_file\" $tool_name" "Desplegando $tool_name (Stack Final)..."
         else
             show_error "Error crítico al inicializar la base de datos de Chatwoot."; cleanup 1; exit 1
@@ -453,7 +461,7 @@ install_docker_tool() {
 main() {
     echo -e "\n${GREEN}===========================================${NC}"
     echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀  ${NC}"
-    echo -e "${GREEN}      (V4.9 - FINAL SIN ERRORES)         ${NC}"
+    echo -e "${GREEN}    (V5.0.0 - SEGURIDAD Y ESTABILIDAD)   ${NC}"
     echo -e "${GREEN}===========================================${NC}\n"
 
     if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
@@ -473,21 +481,24 @@ main() {
     if [ ${#SECRET_KEY} -ne 32 ]; then show_warning "Clave proporcionada no tiene 32 caracteres. Usando la generada."; SECRET_KEY=$DEFAULT_SECRET_KEY; fi
     show_message "Clave secreta utilizada: $SECRET_KEY"
 
-    # Guardar variables en .env.global
     env_global_file="$DOCKER_DIR/.env.global"
     cat > $env_global_file << EOL
 COMMON_PASSWORD=$COMMON_PASSWORD
 BASE_DOMAIN=$BASE_DOMAIN
 SECRET_KEY=$SECRET_KEY
 EOL
-    show_success "Variables de entorno guardadas en $env_global_file"
+    show_success "Variables de entorno guardadas."
 
-    # 2. Inicialización de Docker
+    # 2. Instalación de Seguridad CRÍTICA (NUEVO)
+    install_security_tools
+    configure_security_tools
+    
+    # 3. Inicialización de Docker
     initialize_docker_swarm
-    create_docker_networks # FIX CRÍTICO DE REDES
+    create_docker_networks
     pre_pull_images
     
-    # 3. Instalación de servicios en orden de dependencias
+    # 4. Instalación de servicios en orden de dependencias
     show_message "Instalando servicios en orden de dependencias..."
     INSTALL_ORDER=("traefik" "redis" "postgres" "portainer" "n8n" "evoapi" "chatwoot")
     

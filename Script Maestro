@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="1.3.1" # Versión actualizada: Corrección de error de sintaxis y caracteres
+SCRIPT_VERSION="1.3.2" # Versión actualizada: Purga completa de caracteres invisibles
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -777,7 +777,7 @@ create_volume_directories() {
     done
 }
 
-# Función para inicializar la base de datos de Chatwoot (FIXED v1.3.1)
+# Función para inicializar la base de datos de Chatwoot
 initialize_chatwoot_database() {
     local tool_name="chatwoot"
     local subdomain=$1
@@ -979,8 +979,8 @@ EOF
     else
         show_error "La inicialización de la base de datos no se completó en el tiempo esperado"
         return 1
-    fi # <-- **FIXED: Proper closing of the conditional block**
-} # <-- **Function closing brace**
+    fi
+}
 
 
 # Función para instalar una herramienta con Docker Swarm
@@ -1153,13 +1153,3 @@ main() {
     echo "Información de credenciales:"
     echo "- Contraseña común: $COMMON_PASSWORD"
     echo "- Clave secreta: $SECRET_KEY"
-    echo ""
-    echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"
-    echo ""
-    echo "${YELLOW}*** ATENCIÓN: La contraseña de Traefik (https://proxy.$BASE_DOMAIN) es: ${COMMON_PASSWORD} (Usuario: admin) ***${NC}"
-
-    cleanup 0 false
-}
-
-# Ejecutar función principal
-main

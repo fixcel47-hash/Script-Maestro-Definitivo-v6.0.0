@@ -119,6 +119,12 @@ cleanup() {
     
     echo -e "${BLUE}[INFO]${NC} Realizando limpieza antes de salir..."
     
+    # Intento de deshacer el FIX de rkhunter
+    if [ -f "/etc/rkhunter.conf.orig" ]; then
+        show_message "Restaurando archivo rkhunter.conf original..."
+        mv -f /etc/rkhunter.conf.orig /etc/rkhunter.conf 2>/dev/null
+    fi
+
     if [ $exit_code -ne 0 ]; then
         show_warning "Fallo detectado. Intentando remover stacks para evitar conflictos futuros..."
         for tool_name in "${AVAILABLE_TOOLS[@]}"; do
@@ -208,6 +214,10 @@ configure_security_tools() {
     show_message "Configurando rkhunter, Fail2Ban y UFW..."
     
     # 1. Configuración de rkhunter
+    show_message "Aplicando **FIX CRÍTICO a rkhunter.conf**: Comentando WEB_CMD para evitar error de ruta relativa..."
+    # Crear un respaldo y comentar la línea WEB_CMD
+    run_command "cp /etc/rkhunter.conf /etc/rkhunter.conf.orig && sed -i '/^WEB_CMD=/s/^/#/' /etc/rkhunter.conf" "Aplicando FIX a rkhunter.conf..."
+
     run_command "rkhunter --update" "Actualizando base de datos de rkhunter..."
     run_command "rkhunter --propcheck" "Comprobando propiedades de archivos (puede tomar tiempo)..."
     show_message "Para ejecutar un chequeo completo de rkhunter, use: rkhunter -c --rwo"
@@ -233,6 +243,7 @@ configure_security_tools() {
     fi
 
     show_success "Herramientas de seguridad configuradas y activas."
+    # La restauración de rkhunter.conf se realiza en la función cleanup
 }
 
 
@@ -487,85 +498,4 @@ install_docker_tool() {
     # Esperar a que Redis y Postgres se estabilicen antes de continuar con dependientes
     if [ "$tool_name" = "redis" ] || [ "$tool_name" = "postgres" ]; then
         if ! wait_for_service "$tool_name"; then
-            show_error "El stack $tool_name no se estabilizó correctamente. **FALLO CRÍTICO**."
-            cleanup 1; exit 1
-        fi
-    fi
-    
-    # Proceso especial para Chatwoot (Inicialización de DB)
-    if [ "$tool_name" = "chatwoot" ]; then
-        if initialize_chatwoot_database; then
-            show_success "Base de datos de Chatwoot inicializada. Desplegando stack final."
-            # Despliega el stack de Chatwoot una segunda vez para iniciar los servicios principales
-            run_command "docker stack deploy -c \"$deploy_file\" $tool_name" "Desplegando $tool_name (Stack Final)..."
-        else
-            show_error "Error crítico al inicializar la base de datos de Chatwoot."; cleanup 1; exit 1
-        fi
-    fi
-
-    cd $DOCKER_DIR || { show_error "No se pudo volver al directorio principal $DOCKER_DIR"; cleanup 1; exit 1; }
-}
-
-# --- Flujo Principal ---
-
-main() {
-    echo -e "\n${GREEN}===========================================${NC}"
-    echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀  ${NC}"
-    echo -e "${GREEN}    (V5.0.0 - SEGURIDAD, ESTABILIDAD Y UFW)    ${NC}"
-    echo -e "${GREEN}===========================================${NC}\n"
-
-    if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
-    mkdir -p $DOCKER_DIR; cd $DOCKER_DIR || { show_error "No se pudo acceder a $DOCKER_DIR"; cleanup 1; exit 1; }
-
-    # 1. Configuración Inicial
-    show_message "Configuración inicial"
-    read -sp "Ingrese la contraseña común para todas las herramientas y DBs: " COMMON_PASSWORD; echo
-    if [ -z "$COMMON_PASSWORD" ]; then show_error "La contraseña no puede estar vacía"; cleanup 1; exit 1; fi
-
-    read -p "Ingrese el dominio base (ejemplo: midominio.com): " BASE_DOMAIN
-    if [ -z "$BASE_DOMAIN" ]; then show_error "El dominio no puede estar vacío"; cleanup 1; exit 1; fi
-
-    DEFAULT_SECRET_KEY=$(generate_random_key)
-    read -p "Ingrese una clave secreta de 32 caracteres (o Enter para usar la generada): " SECRET_KEY
-    SECRET_KEY=${SECRET_KEY:-$DEFAULT_SECRET_KEY}
-    if [ ${#SECRET_KEY} -ne 32 ]; then show_warning "Clave proporcionada no tiene 32 caracteres. Usando la generada."; SECRET_KEY=$DEFAULT_SECRET_KEY; fi
-    show_message "Clave secreta utilizada: $SECRET_KEY"
-
-    env_global_file="$DOCKER_DIR/.env.global"
-    cat > $env_global_file << EOL
-COMMON_PASSWORD=$COMMON_PASSWORD
-BASE_DOMAIN=$BASE_DOMAIN
-SECRET_KEY=$SECRET_KEY
-EOL
-    show_success "Variables de entorno guardadas."
-
-    # 2. Instalación de Seguridad CRÍTICA (Fail2Ban, rkhunter, UFW)
-    install_security_tools
-    configure_security_tools
-    
-    # 3. Inicialización de Docker
-    initialize_docker_swarm
-    create_docker_networks
-    pre_pull_images
-    
-    # 4. Instalación de servicios en orden de dependencias
-    show_message "Instalando servicios en orden de dependencias..."
-    INSTALL_ORDER=("traefik" "redis" "postgres" "portainer" "n8n" "evoapi" "chatwoot")
-    
-    for tool_name in "${INSTALL_ORDER[@]}"; do
-        default_subdomain=""
-        for j in "${!AVAILABLE_TOOLS[@]}"; do
-            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then default_subdomain="${DEFAULT_SUBDOMAINS[$j]}"; break; fi
-        done
-        
-        install_docker_tool "$tool_name" "$default_subdomain"
-    done
-
-    echo ""
-    show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
-    
-    cleanup 0 true
-}
-
-# Ejecutar función principal
-main
+            show_error "El stack $tool_name no se estabilizó

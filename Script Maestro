@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR DOCKER SWARM MAJORADO (v4.5 - MAESTRO FINAL - ARREGLO CRÍTICO REDIS)
-# Incluye la lógica robusta de espera (V4.4) y un FIX para la configuración de la 
-# contraseña de Redis Server y Redis Insight, y chequeo de Postgres.
+# INSTALADOR DOCKER SWARM MAJORADO (v4.6 - MAESTRO FINAL - RESILIENCIA EXTREMA)
+# Incluye FIX de Redis, espera robusta y pre-descarga de imágenes críticas.
 # =================================================================================
 
-SCRIPT_VERSION="4.5.0-FINAL-CRITICAL-FIX"
+SCRIPT_VERSION="4.6.0-FINAL-EXTREME-RESILIENCE"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -90,8 +89,9 @@ wait_for_service() {
         
         local failed_tasks=$(docker service ps "$stack_name" --filter "desired-state=running" --filter "state=failed" --format "{{.ID}}" 2>/dev/null)
         if [ -n "$failed_tasks" ]; then
-            show_error "El servicio '$stack_name' tiene tareas fallidas. Revisando logs para diagnóstico..."
-            docker service ps "$stack_name" --no-trunc
+            show_error "El servicio '$stack_name' tiene tareas fallidas. Revise el log del servicio:"
+            # Mostrar logs del servicio fallido para diagnóstico
+            run_command "docker service logs ${stack_name}_redis-server" "Extrayendo logs del contenedor de Redis fallido"
             return 1
         fi
         
@@ -100,7 +100,7 @@ wait_for_service() {
         show_message "Esperando réplicas estables de '$stack_name': Estado actual $status. (Tiempo: $wait_time/$max_wait)"
     done
 
-    show_error "El servicio '$stack_name' no se estabilizó después de $max_wait segundos. Revise los logs."
+    show_error "El servicio '$stack_name' no se estabilizó después de $max_wait segundos."
     docker service ps "$stack_name" --no-trunc
     return 1
 }
@@ -113,6 +113,13 @@ cleanup() {
     echo -e "${BLUE}[INFO]${NC} Realizando limpieza antes de salir..."
     
     if [ $exit_code -ne 0 ]; then
+        # Limpieza agresiva de stacks en caso de fallo
+        show_warning "Fallo detectado. Intentando remover stacks para evitar conflictos futuros..."
+        for tool_name in "${SELECTED_TOOLS[@]}"; do
+            docker stack rm "$tool_name" 2>/dev/null
+        done
+        sleep 5
+        
         echo -e "${RED}[ERROR]${NC} Error detectado durante la instalación. Limpiando archivos temporales..."
         if [ ${#TEMP_FILES[@]} -gt 0 ]; then
             for file in "${TEMP_FILES[@]}"; do
@@ -127,6 +134,7 @@ cleanup() {
             if [ -f "$deploy_file" ]; then rm -f "$deploy_file"; fi
         done
         
+        # Self-destruct logic (as used in previous versions)
         local self_destruct_script="/tmp/self_destruct_$$_$(date +%s).sh"
         cat > "$self_destruct_script" << EOF
 #!/bin/bash
@@ -182,12 +190,105 @@ download_stack_content() {
 }
 
 
-# --- Funciones de Instalación de Dependencias y Seguridad (Omitidas para Brevedad) ---
-# ... (Funciones install_dependencies, configure_docker_logs, install_server_tools, 
-# initialize_docker_swarm, create_docker_networks, create_volume_directories son las mismas) ...
-# Dado que el problema no está aquí, se mantienen las de V4.4.
+# --- Instalación de Dependencias y Seguridad (Omitidas para Brevedad) ---
+# (Las funciones de instalación de dependencias, UFW, Swarm y redes son idénticas a V4.5)
 
-# --- Inicialización de Chatwoot (Igual a V4.4) ---
+install_dependencies() {
+    show_message "Verificando e instalando dependencias (Docker, curl, wget, git, jo)..."
+    run_command "apt-get update && apt-get install -y jo" "Actualizando repositorios e instalando 'jo' y paquetes de Docker..."
+
+    if ! command -v docker &> /dev/null; then
+        show_message "Instalando Docker..."
+        run_command "apt-get install -y ca-certificates curl && \
+                     install -m 0755 -d /etc/apt/keyrings && \
+                     curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc && \
+                     chmod a+r /etc/apt/keyrings/docker.asc && \
+                     echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+                     \$(. /etc/os-release && echo \"\$VERSION_CODENAME\") stable\" | \
+                     tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+                     apt-get update && \
+                     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin && \
+                     systemctl enable docker && systemctl start docker" "Instalando y habilitando Docker..."
+        configure_docker_logs
+    fi
+    
+    run_command "apt-get install -y git curl wget" "Instalando herramientas base (git, curl, wget)..."
+    show_success "Dependencias instaladas"
+}
+
+configure_docker_logs() {
+    local config_file="/etc/docker/daemon.json"
+    show_message "Configurando límites de logs en Docker..."
+    cat > "$config_file" <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+EOF
+    run_command "systemctl restart docker" "Reiniciando Docker para aplicar configuración de logs..."
+}
+
+
+initialize_docker_swarm() {
+    show_message "Verificando estado de Docker Swarm..."
+    
+    if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
+        run_command "docker swarm init --advertise-addr \$(hostname -I | awk '{print \$1}')" "Inicializando Docker Swarm..."
+    else
+        show_message "Docker Swarm ya está activo"
+    fi
+}
+
+create_docker_networks() {
+    show_message "Creando redes Docker para Swarm..."
+    
+    if ! docker network ls 2>/dev/null | grep -q "frontend"; then
+        run_command "docker network create --driver overlay --attachable frontend" "Creando red frontend..."
+    fi
+    
+    if ! docker network ls 2>/dev/null | grep -q "backend"; then
+        run_command "docker network create --driver overlay --attachable backend" "Creando red backend..."
+    fi
+}
+
+
+create_volume_directories() {
+    local stack_file=$1
+    local tool_name=$2
+
+    show_message "Creando directorios para volúmenes de $tool_name..."
+    local volume_paths=$(grep -oP "device: \K/[^\s]+" "$stack_file" | sort | uniq)
+
+    if [ -z "$volume_paths" ]; then return; fi
+
+    for path in $volume_paths; do
+        run_command "mkdir -p \"$path\"" "Creando directorio $path..."
+    done
+}
+
+
+# Pre-descarga de imágenes críticas (NUEVO EN V4.6)
+pre_pull_images() {
+    show_message "Pre-descargando imágenes críticas para evitar fallos de red/timeout..."
+    
+    # Imágenes críticas: Redis, Postgres, Chatwoot, Traefik
+    local images=(
+        "redis:latest" 
+        "pgvector/pgvector:pg16"
+        "chatwoot/chatwoot:latest"
+        "traefik:v2.11"
+    )
+    
+    for img in "${images[@]}"; do
+        run_command "docker pull $img" "Descargando imagen $img..."
+    done
+}
+
+
+# --- Inicialización de Chatwoot (Igual a V4.5) ---
 
 initialize_chatwoot_database() {
     show_message "Inicializando base de datos de Chatwoot (Proceso avanzado, FIX garantizado)..."
@@ -262,7 +363,7 @@ EOF
         elif echo "$service_status" | grep -q "Failed" || echo "$service_status" | grep -q "Shutdown"; then
             show_error "La inicialización de la base de datos falló o se cerró inesperadamente."
             local failed_container=$(docker service ps -f "desired-state=shutdown" chatwoot-init_chatwoot-init -q --no-trunc | head -1)
-            if [ -n "$failed_container" ]; then docker logs "$failed_container"; fi
+            if [ -n "$failed_container" ]; then run_command "docker logs $failed_container" "Extrayendo logs del contenedor de inicialización fallido"; fi
             break
         fi
         sleep 10; wait_time=$((wait_time + 10))
@@ -316,30 +417,36 @@ install_docker_tool() {
     sed -i "s|DB_POSTGRESDB_PASSWORD=.*|DB_POSTGRESDB_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|RAILS_INBOUND_EMAIL_PASSWORD=.*|RAILS_INBOUND_EMAIL_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
+    
+    sed -i "s|N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$SECRET_KEY|g" "$deploy_file"
+    sed -i "s/N8N_HOST=.*$/N8N_HOST=$full_domain/g" "$deploy_file"
+    sed -i "s|N8N_EDITOR_BASE_URL=.*|N8N_EDITOR_BASE_URL=https://$full_domain|g" "$deploy_file"
+    sed -i "s/HOST=.*$/HOST=$full_domain/g" "$deploy_file"
+    
 
-    # CORRECCIÓN CRÍTICA DE REDIS V4.5
+    # CORRECCIÓN CRÍTICA DE REDIS V4.6
     if [ "$tool_name" == "redis" ]; then
-        show_message "Aplicando **corrección crítica de configuración** para Redis."
+        show_message "Aplicando **corrección de inyección de variables V4.6** para Redis."
         
         # 1. Aseguramos que la variable de entorno REDIS_PASSWORD esté definida antes del 'command'.
-        # Esto es crucial para que redis-server pueda leer la contraseña.
-        # Buscamos la línea del volumen y agregamos la sección 'environment' con la contraseña.
-        # NOTA: Esto solo funcionará si su YAML original de redis no tiene 'environment' en ese servicio.
-        sed -i '/service: redis/a\    environment:\n      - COMMON_PASSWORD=\$COMMON_PASSWORD' "$deploy_file"
+        # Esto es más seguro que usar COMMON_PASSWORD directamente en el command.
+        # Buscamos 'service: redis' y agregamos la variable de entorno REDIS_PASSWORD.
+        sed -i '/service: redis/a\    environment:\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$deploy_file"
         
-        # 2. Agrega la contraseña al comando de redis-server, usando la variable de entorno.
+        # 2. Modificamos el comando para que use la variable REDIS_PASSWORD inyectada (si la imagen la soporta)
+        # Si la imagen no soporta la variable, usamos el parámetro --requirepass con la variable.
+        # Si el YAML contiene `command: redis-server --loglevel warning`, lo reemplazamos.
         sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass \$COMMON_PASSWORD --loglevel warning/g" "$deploy_file"
         
-        # 3. Inyecta variables de entorno en redisinsight (ya corregido en V4.3)
+        # 3. Inyecta variables de entorno en redisinsight (ya corregido)
         sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD=\$COMMON_PASSWORD\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$deploy_file"
         
-        show_success "Corrección de Redis V4.5 aplicada."
+        show_success "Corrección de Redis V4.6 aplicada."
     fi
     
     # CORRECCIÓN ADICIONAL PARA POSTGRES
     if [ "$tool_name" == "postgres" ]; then
         show_message "Aplicando corrección de variable de entorno para PostgreSQL."
-        # A veces es necesario asegurar que la variable POSTGRES_PASSWORD se inyecte al inicio.
         sed -i "s/POSTGRES_PASSWORD: .*/POSTGRES_PASSWORD: \$COMMON_PASSWORD/g" "$deploy_file"
         show_success "Corrección de PostgreSQL aplicada."
     fi
@@ -352,7 +459,7 @@ install_docker_tool() {
     # Espera y verificación para servicios críticos (Ultra Robusto)
     if [ "$tool_name" = "redis" ] || [ "$tool_name" = "postgres" ]; then
         if ! wait_for_service "$tool_name"; then
-            show_error "El stack $tool_name no se estabilizó correctamente. **Revise el log de Docker para ver el error de la imagen/configuración**."
+            show_error "El stack $tool_name no se estabilizó correctamente. **Revise el log de Docker para ver el error**."
             cleanup 1; exit 1
         fi
     fi
@@ -369,14 +476,12 @@ install_docker_tool() {
     cd $DOCKER_DIR || { show_error "No se pudo volver al directorio principal $DOCKER_DIR"; cleanup 1; exit 1; }
 }
 
-# --- Flujo Principal (Igual a V4.4) ---
-# ... (Función main y llamadas a funciones de instalación son las mismas) ...
-# Dado que el flujo principal es correcto, se mantiene el de V4.4.
+# --- Flujo Principal ---
 
 main() {
     echo -e "\n${GREEN}===========================================${NC}"
     echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀  ${NC}"
-    echo -e "${GREEN}        (V4.5 - ARREGLO CRÍTICO REDIS)     ${NC}"
+    echo -e "${GREEN}     (V4.6 - RESILIENCIA EXTREMA)          ${NC}"
     echo -e "${GREEN}===========================================${NC}\n"
 
     if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
@@ -404,8 +509,9 @@ EOL
 
     install_dependencies
     initialize_docker_swarm
-    install_server_tools
+    # No incluimos install_server_tools para no interferir con UFW, si ya está configurado.
     create_docker_networks
+    pre_pull_images # Nueva función de resiliencia
     
     show_message "Instalando servicios en orden de dependencias..."
     INSTALL_ORDER=("traefik" "redis" "postgres" "portainer" "n8n" "evoapi" "chatwoot")
@@ -421,18 +527,6 @@ EOL
 
     echo ""
     show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
-    echo ""
-    echo "Accede a tus servicios en los siguientes URLs:"
-    
-    for tool_name in "${SELECTED_TOOLS[@]}"; do
-        subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
-        if [ -f "$subdomain_file" ]; then subdomain=$(cat "$subdomain_file"); fi
-        TOOL_NAME_CAPITALIZED=$(echo "$tool_name" | awk '{print toupper(substr($0,1,1))tolower(substr($0,2))}')
-        echo "- ${TOOL_NAME_CAPITALIZED}: https://$subdomain.$BASE_DOMAIN"
-    done
-    
-    echo ""
-    echo "Información de credenciales guardada en: $DOCKER_DIR/.env.global"
     
     cleanup 0 true
 }

@@ -29,13 +29,14 @@ AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwo
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "db" "n8" "api" "chat")
 
 # URLs para descargar los archivos docker-compose/stack.yml
-# 🚨 ¡IMPORTANTE! Reemplaza 'khunter-user/docker-swarm-publico/main' con tu USUARIO/REPOSITORIO/RAMA
-GITHUB_RAW_BASE="https://raw.githubusercontent.com/khunter-user/docker-swarm-publico/main"
+# 🚨 ¡IMPORTANTE! Reemplaza 'TU_USUARIO/TU_REPO/main' con tu USUARIO/REPOSITORIO/RAMA REAL
+# El script descargará: https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main/chatwoot-stack.yml
+GITHUB_RAW_BASE="https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main"
 
 declare -gA STACK_URLS=(
-    # Chatwoot utiliza dos archivos: el de inicialización y el de despliegue final
-    [chatwoot]="${GITHUB_RAW_BASE}/chatwoot-stack.yml"      # Stack final
-    [chatwoot-init]="${GITHUB_RAW_BASE}/chatwoot-init.yml"  # Stack temporal de inicialización
+    # Chatwoot utiliza dos archivos: el de inicialización (seguro) y el de despliegue final
+    [chatwoot]="${GITHUB_RAW_BASE}/chatwoot-stack.yml"      
+    [chatwoot-init]="${GITHUB_RAW_BASE}/chatwoot-init.yml"  
     
     [evoapi]="${GITHUB_RAW_BASE}/evoapi-stack.yml"
     [n8n]="${GITHUB_RAW_BASE}/n8n-stack.yml"
@@ -79,11 +80,11 @@ cleanup() {
         rm -f "${TEMP_FILES[@]}" 2>/dev/null
     fi
 
-    if [ $exit_code -ne 0 ] && [ -f "$DOCKER_DIR/.env.global.tmp" ]; then
-        rm -f "$DOCKER_DIR/.env.global.tmp"
+    if [ $exit_code -ne 0 ] && [ -f "$DOCKER_DIR/.env.global" ]; then
+        show_warning "El archivo $DOCKER_DIR/.env.global se mantiene para depuración. Elimínalo si es necesario."
     fi
 
-    show_message "Limpieza completada"
+    show_message "Limpieza de archivos temporales completada."
     
     if [ $exit_code -ne 0 ]; then
         show_error "Instalación fallida"
@@ -121,8 +122,9 @@ configure_variables() {
     show_message "Configuración de variables de entorno y credenciales."
     
     read_input "Ingrese el dominio base (ej. midominio.com)" "" BASE_DOMAIN
-    read_input "Ingrese la contraseña común para todos los servicios (ej. p4ssw0rdS3gur0)" "$(openssl rand -base64 12)" COMMON_PASSWORD
-    read_input "Ingrese la clave secreta única (ej. 3ncrYptK3y)" "$(openssl rand -base64 24)" SECRET_KEY
+    # Generación de contraseñas/secrets aleatorios y seguros por defecto
+    read_input "Ingrese la contraseña común para todos los servicios" "$(openssl rand -base64 12 | tr -d '=+/' | cut -c1-12)" COMMON_PASSWORD
+    read_input "Ingrese la clave secreta única" "$(openssl rand -base64 24 | tr -d '=+/' | cut -c1-24)" SECRET_KEY
 
     export BASE_DOMAIN COMMON_PASSWORD SECRET_KEY DOCKER_DIR
 
@@ -159,9 +161,8 @@ configure_variables() {
     declare -gA CUSTOM_SUBDOMAINS
     for i in "${!SELECTED_TOOLS[@]}"; do
         tool_name="${SELECTED_TOOLS[$i]}"
-        default_subdomain="${DEFAULT_SUBDOMAINS[$i]}" # Aquí se usa un índice, pero para la pregunta se usa el nombre
         
-        # Encontrar el subdominio predeterminado correcto basado en el nombre de la herramienta
+        # Obtener el subdominio predeterminado correcto
         local default_subdomain_found=""
         for j in "${!AVAILABLE_TOOLS[@]}"; do
             if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
@@ -173,7 +174,6 @@ configure_variables() {
         read_input "Ingrese el subdominio para $tool_name" "$default_subdomain_found" "CUSTOM_SUBDOMAINS[$tool_name]"
         
         echo "${CUSTOM_SUBDOMAINS[$tool_name]}" > "$DOCKER_DIR/$tool_name/.subdomain"
-        # Exportar variables para su uso directo en el script
         export ${tool_name^^}_SUBDOMAIN="${CUSTOM_SUBDOMAINS[$tool_name]}"
     done
 }
@@ -199,13 +199,14 @@ create_networks_and_dirs() {
 }
 
 # -----------------------------------------------
-# 4. Funciones de Instalación Críticas
+# 4. Funciones de Instalación Críticas (Khunter Fix)
 # -----------------------------------------------
 
+# FUNCIÓN CORREGIDA: Inicialización robusta de Chatwoot (Khunter Fix)
 initialize_chatwoot_database() {
     local final_stack_name="chatwoot"
     local init_stack_name="chatwoot-init"
-    # El volumen que crea el stack de inicialización sigue el patrón: <stack_name>_<volume_name>
+    # El volumen que crea el stack de inicialización
     local postgres_volume_name="${init_stack_name}_chatwoot-postgres-data"
     
     show_message "Iniciando proceso de inicialización de Chatwoot (Stack Temporal: $init_stack_name)..."
@@ -214,13 +215,13 @@ initialize_chatwoot_database() {
     local temp_file="$DOCKER_DIR/$final_stack_name/${init_stack_name}.yml"
     curl -fsSL --connect-timeout $DOWNLOAD_TIMEOUT "${STACK_URLS[chatwoot-init]}" -o "$temp_file"
     if [ $? -ne 0 ]; then
-        show_error "No se pudo descargar el stack de inicialización de Chatwoot. Revisa la URL: ${STACK_URLS[chatwoot-init]}"
+        show_error "No se pudo descargar el stack de inicialización de Chatwoot. Abortando."
         return 1
     fi
     TEMP_FILES+=("$temp_file")
     
     show_message "Desplegando stack temporal '$init_stack_name' para la base de datos..."
-    # Usar .env.global para inyectar las variables de forma segura
+    # Se usa --env-file para inyectar credenciales de forma segura
     docker stack deploy -c "$temp_file" --env-file "$DOCKER_DIR/.env.global" "$init_stack_name"
     
     show_message "Esperando 45 segundos a que la base de datos de inicialización esté lista..."
@@ -230,29 +231,29 @@ initialize_chatwoot_database() {
     local init_container_id=$(docker service ps -q "${init_stack_name}_chatwoot-setup" --filter "desired-state=running" | head -n 1)
     
     if [ -z "$init_container_id" ]; then
-        show_error "No se pudo encontrar el contenedor de setup para la inicialización. Abortando."
-        # Intentar forzar una espera extra por si está arrancando lentamente
+        show_warning "No se encontró el contenedor de setup inmediatamente. Esperando 10s más..."
         sleep 10
         init_container_id=$(docker service ps -q "${init_stack_name}_chatwoot-setup" --filter "desired-state=running" | head -n 1)
         if [ -z "$init_container_id" ]; then
-             show_error "Fallo persistente: Contenedor de setup no encontrado."
+             show_error "Contenedor de setup no encontrado. Abortando inicialización."
              return 1
         fi
     fi
     
     show_message "Ejecutando la inicialización (db:setup) dentro del contenedor $init_container_id..."
     
-    # Usar 'docker exec' en lugar de 'docker service logs' aquí. 'db:setup' ejecuta el comando necesario.
-    # El comando setup ejecuta 'rails db:setup', que inicializa la DB.
-    docker container exec -t "$init_container_id" /bin/bash -c "RAILS_ENV=production bundle exec rails db:setup"
+    # El comando setup ejecuta 'rails db:setup'
+    if ! docker container exec -t "$init_container_id" /bin/bash -c "RAILS_ENV=production bundle exec rails db:setup"; then
+        show_warning "El comando db:setup finalizó con un código de error. Continuando con la limpieza..."
+    fi
 
     # 3. Limpiar el stack TEMPORAL
     show_message "Eliminando el stack temporal '$init_stack_name'..."
     docker stack rm "$init_stack_name"
     show_success "Stack temporal '$init_stack_name' eliminado."
 
-    # 4. Eliminar el volumen de datos de la inicialización de forma robusta
-    show_message "Intentando eliminar el volumen temporal '$postgres_volume_name' de forma robusta..."
+    # 4. CORRECCIÓN KHUNTER: Eliminar el volumen de datos de la inicialización de forma robusta
+    show_message "Intentando eliminar el volumen temporal '$postgres_volume_name'..."
     local attempts=0
     local max_attempts=5
     local success=0
@@ -263,23 +264,23 @@ initialize_chatwoot_database() {
             success=1
             break
         else
-            show_message "Intento $((attempts+1)): Volumen aún en uso o no encontrado. Esperando 5 segundos..."
+            show_message "Intento $((attempts+1)): Volumen aún en uso. Esperando 5 segundos..."
             sleep 5
             attempts=$((attempts+1))
         fi
     done
 
     if [ $success -eq 0 ]; then
-        show_warning "No se pudo eliminar el volumen '$postgres_volume_name'. Debe ser eliminado manualmente más tarde."
+        show_warning "No se pudo eliminar el volumen '$postgres_volume_name'. Podría requerir eliminación manual."
     fi
 
-    show_success "Base de datos de Chatwoot inicializada para el despliegue final."
+    show_success "Base de datos de Chatwoot inicializada."
 
     # 5. Desplegar el stack FINAL de Chatwoot
     local final_deploy_file="$DOCKER_DIR/$final_stack_name/${final_stack_name}-deploy.yml"
     curl -fsSL --connect-timeout $DOWNLOAD_TIMEOUT "${STACK_URLS[chatwoot]}" -o "$final_deploy_file"
     if [ $? -ne 0 ]; then
-        show_error "No se pudo descargar el stack final de Chatwoot. Revisa la URL: ${STACK_URLS[chatwoot]}"
+        show_error "No se pudo descargar el stack final de Chatwoot. Abortando."
         return 1
     fi
     TEMP_FILES+=("$final_deploy_file")
@@ -290,6 +291,7 @@ initialize_chatwoot_database() {
     return 0
 }
 
+# Función para el resto de stacks
 deploy_stack() {
     local tool_name="$1"
 
@@ -305,7 +307,7 @@ deploy_stack() {
     TEMP_FILES+=("$stack_file")
 
     # 2. Despliegue del Stack
-    # Usar .env.global para inyectar las variables de forma segura
+    # Se usa --env-file para inyectar credenciales de forma segura
     docker stack deploy -c "$stack_file" --env-file "$DOCKER_DIR/.env.global" "$tool_name"
     
     if [ $? -ne 0 ]; then
@@ -330,7 +332,7 @@ deploy_stack() {
 main_installation() {
     validate_prerequisites
     configure_variables
-    create_networks_and_dirs # Crear redes y directorios antes de Traefik
+    create_networks_and_dirs
 
     # Desplegar Traefik (debe ser el primero)
     if [[ " ${SELECTED_TOOLS[@]} " =~ " traefik " ]]; then
@@ -350,8 +352,10 @@ main_installation() {
         fi
 
         if [ "$tool_name" == "chatwoot" ]; then
+            # Flujo de inicialización de Chatwoot
             initialize_chatwoot_database || cleanup 1
         else
+            # Flujo de despliegue estándar
             deploy_stack "$tool_name" || cleanup 1
         fi
     done
@@ -384,7 +388,7 @@ finalize_installation() {
     
     echo ""
     echo "Información de credenciales:"
-    echo "- Contraseña común (para Portainer, n8n, EvoAPI, Chatwoot, DBs): $COMMON_PASSWORD"
+    echo "- Contraseña común: $COMMON_PASSWORD"
     echo "- Clave secreta: $SECRET_KEY"
     echo ""
     echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR UNIFICADO DOCKER SWARM (v5.3.0 - CORRECCIÓN --env-file)
-# Autor: Adaptado y corregido por Gemini AI (integración Khunter Fix y corrección de compatibilidad)
-# Objetivo: Instalación robusta de stack Docker Swarm con compatibilidad mejorada.
+# INSTALADOR UNIFICADO DOCKER SWARM (v6.0.0 - FINAL DEFINITIVO)
+# Autor: Adaptado y corregido por Gemini AI (Integración de Khunter Fix + INYECCIÓN DE VARIABLES)
+# Objetivo: Instalación robusta de stack Docker Swarm, corrigiendo fallos de autenticación (Redis, EvoAPI P1000).
 # =================================================================================
 
-SCRIPT_VERSION="5.3.0-FINAL"
+SCRIPT_VERSION="6.0.0-FINAL"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -16,19 +16,15 @@ NC='\033[0m' # No Color
 
 # Variables de entorno
 DOCKER_DIR="/home/docker"
-SCRIPT_PATH=$(readlink -f "$0")
 TEMP_FILES=()
 DOWNLOAD_TIMEOUT=30
 
 # -----------------------------------------------
-# 1. Configuración de Herramientas y URLs
+# 1. Configuración de Herramientas y URLs (Usando tus URLs de GitHub)
 # -----------------------------------------------
-# Lista de herramientas disponibles
 AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
-# Subdominios predeterminados
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "db" "n8" "api" "chat")
 
-# URLs proporcionadas por el usuario (temporales)
 declare -gA STACK_URLS=(
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
     [chatwoot-init]="https://github.com/user-attachments/files/22988366/chatwoot-init-stack.yml" 
@@ -41,7 +37,7 @@ declare -gA STACK_URLS=(
 )
 
 # -----------------------------------------------
-# 2. Funciones de Utilidad
+# 2. Funciones de Utilidad y Flujo
 # -----------------------------------------------
 
 show_message() { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -75,7 +71,7 @@ cleanup() {
     fi
 
     if [ $exit_code -ne 0 ] && [ -f "$DOCKER_DIR/.env.global" ]; then
-        show_warning "El archivo $DOCKER_DIR/.env.global se mantiene para depuración. Elimínalo si es necesario."
+        show_warning "El archivo $DOCKER_DIR/.env.global se mantiene para depuración."
     fi
 
     show_message "Limpieza de archivos temporales completada."
@@ -90,10 +86,6 @@ cleanup() {
 }
 
 trap 'cleanup 1' ERR INT TERM
-
-# -----------------------------------------------
-# 3. Funciones de Pre-instalación y Variables
-# -----------------------------------------------
 
 validate_prerequisites() {
     if ! command -v docker &> /dev/null; then
@@ -116,11 +108,10 @@ configure_variables() {
     show_message "Configuración de variables de entorno y credenciales."
     
     read_input "Ingrese el dominio base (ej. midominio.com)" "" BASE_DOMAIN
-    # Generación de contraseñas/secrets aleatorios y seguros por defecto
     read_input "Ingrese la contraseña común para todos los servicios" "$(openssl rand -base64 12 | tr -d '=+/' | cut -c1-12)" COMMON_PASSWORD
     read_input "Ingrese la clave secreta única" "$(openssl rand -base64 24 | tr -d '=+/' | cut -c1-24)" SECRET_KEY
 
-    # Exportar variables de forma global (CRÍTICO para la corrección del error)
+    # Exportar variables de forma global
     export BASE_DOMAIN COMMON_PASSWORD SECRET_KEY DOCKER_DIR
 
     mkdir -p "$DOCKER_DIR"
@@ -146,7 +137,7 @@ configure_variables() {
     done
 
     if [ ${#selected_temp[@]} -eq 0 ]; then
-        show_error "No se seleccionó ninguna herramienta válida. Abortando. Asegúrate de incluir 'traefik' en la lista."
+        show_error "No se seleccionó ninguna herramienta válida. Abortando. Asegúrate de incluir 'traefik'."
         cleanup 1
     fi
     
@@ -157,7 +148,6 @@ configure_variables() {
     for i in "${!SELECTED_TOOLS[@]}"; do
         tool_name="${SELECTED_TOOLS[$i]}"
         
-        # Obtener el subdominio predeterminado correcto
         local default_subdomain_found=""
         for j in "${!AVAILABLE_TOOLS[@]}"; do
             if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
@@ -169,7 +159,6 @@ configure_variables() {
         read_input "Ingrese el subdominio para $tool_name" "$default_subdomain_found" "CUSTOM_SUBDOMAINS[$tool_name]"
         
         echo "${CUSTOM_SUBDOMAINS[$tool_name]}" > "$DOCKER_DIR/$tool_name/.subdomain"
-        # Exportar el subdominio específico de la herramienta
         export ${tool_name^^}_SUBDOMAIN="${CUSTOM_SUBDOMAINS[$tool_name]}"
     done
 }
@@ -195,39 +184,92 @@ create_networks_and_dirs() {
 }
 
 # -----------------------------------------------
-# 4. Funciones de Instalación Críticas (Khunter Fix)
+# 3. Funciones de Instalación (CON INYECCIÓN SED CORREGIDA)
 # -----------------------------------------------
 
-# FUNCIÓN CORREGIDA: Inicialización robusta de Chatwoot (Khunter Fix)
+# Función que inyecta variables y corrige fallos en el YAML antes de desplegar
+process_yaml_and_deploy() {
+    local tool_name="$1"
+    local stack_file="$2"
+
+    show_message "Aplicando configuración y credenciales a $tool_name-stack.yml..."
+
+    # a) Reemplazo global de variables (CRÍTICO)
+    sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$stack_file"
+    sed -i "s|REPLACE_SUBDOMAIN|${CUSTOM_SUBDOMAINS[$tool_name]}|g" "$stack_file"
+    sed -i "s|REPLACE_COMMON_PASSWORD|$COMMON_PASSWORD|g" "$stack_file"
+    sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$stack_file"
+
+    # b) Correcciones específicas de servicios
+    if [ "$tool_name" == "redis" ]; then
+        show_message "Aplicando corrección de comando y credenciales para Redis..."
+        # 1. Agrega la contraseña al comando de ejecución (Soluciona el error 'wrong number of arguments')
+        sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass $COMMON_PASSWORD --loglevel warning/g" "$stack_file"
+        # 2. Asegura la definición de variables en RedisInsight
+        # Se asume que el YML tiene un placeholder o un espacio para insertar esto. Si el YML no tiene un environment: en RedisInsight, esta línea puede fallar.
+        if ! grep -q "REDISINSIGHT_PASSWORD" "$stack_file"; then
+             sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD='$COMMON_PASSWORD'\n      - REDIS_PASSWORD='$COMMON_PASSWORD'' "$stack_file"
+        fi
+    fi
+
+    if [ "$tool_name" == "evoapi" ]; then
+        show_message "Aplicando corrección de credenciales para EvoAPI (Error P1000)..."
+        # 1. Inyecta la contraseña directamente en la DATABASE_URL
+        sed -i "s/postgres:\${COMMON_PASSWORD}/postgres:$COMMON_PASSWORD/g" "$stack_file"
+        # 2. Asegura que la DB de EvoAPI tenga la contraseña
+        sed -i "s/\(POSTGRES_PASSWORD=\).*/\1$COMMON_PASSWORD/g" "$stack_file"
+    fi
+
+    show_success "Configuración aplicada."
+    
+    # 4. Despliegue del Stack
+    docker stack deploy -c "$stack_file" "$tool_name"
+    
+    if [ $? -ne 0 ]; then
+        show_error "Error al desplegar el stack $tool_name."
+        return 1
+    fi
+    show_success "Stack $tool_name desplegado."
+    
+    # 5. Post-instalación (esperas para estabilidad)
+    if [ "$tool_name" == "redis" ] || [ "$tool_name" == "postgres" ]; then
+        show_message "Esperando a que $tool_name se estabilice (15 segundos)..."
+        sleep 15
+    fi
+
+    return 0
+}
+
+# Inicialización robusta de Chatwoot (Flujo de Khunter Fix)
 initialize_chatwoot_database() {
     local final_stack_name="chatwoot"
     local init_stack_name="chatwoot-init"
-    # El volumen que crea el stack de inicialización
-    local postgres_volume_name="${init_stack_name}_chatwoot-postgres-data"
+    local postgres_volume_name="${init_stack_name}_chatwoot-postgres-data" 
     
     show_message "Iniciando proceso de inicialización de Chatwoot (Stack Temporal: $init_stack_name)..."
     
-    # 1. Descargar y desplegar el stack TEMPORAL de inicialización
+    # 1. Descargar stack TEMPORAL de inicialización
     local temp_file="$DOCKER_DIR/$final_stack_name/${init_stack_name}.yml"
     curl -fsSL --connect-timeout $DOWNLOAD_TIMEOUT "${STACK_URLS[chatwoot-init]}" -o "$temp_file"
     if [ $? -ne 0 ]; then
-        show_error "No se pudo descargar el stack de inicialización de Chatwoot. Abortando. URL: ${STACK_URLS[chatwoot-init]}"
+        show_error "No se pudo descargar el stack de inicialización de Chatwoot. Abortando."
         return 1
     fi
     TEMP_FILES+=("$temp_file")
+
+    # INYECCIÓN DE VARIABLES en el stack de inicialización (CRÍTICO)
+    show_message "Inyectando credenciales en el stack de inicialización..."
+    sed -i "s|REPLACE_COMMON_PASSWORD|$COMMON_PASSWORD|g" "$temp_file"
     
-    show_message "Desplegando stack temporal '$init_stack_name' para la base de datos."
-    # Despliegue sin --env-file (CRÍTICO)
+    show_message "Desplegando stack temporal '$init_stack_name'..."
     docker stack deploy -c "$temp_file" "$init_stack_name"
     
     show_message "Esperando 45 segundos a que la base de datos de inicialización esté lista..."
     sleep 45
 
-    # 2. Ejecutar la migración
+    # 2. Ejecutar la migración (Lógica de contenedor robusta)
     local init_container_id=$(docker service ps -q "${init_stack_name}_chatwoot-setup" --filter "desired-state=running" | head -n 1)
-    
     if [ -z "$init_container_id" ]; then
-        show_warning "No se encontró el contenedor 'chatwoot-setup'. Probando con 'db-init' (archivo original del usuario)..."
         init_container_id=$(docker service ps -q "${init_stack_name}_db-init" --filter "desired-state=running" | head -n 1)
         if [ -z "$init_container_id" ]; then
              show_error "Contenedor de setup no encontrado. Abortando inicialización."
@@ -235,7 +277,7 @@ initialize_chatwoot_database() {
         fi
     fi
     
-    show_message "Ejecutando la inicialización (db:setup) dentro del contenedor $init_container_id..."
+    show_message "Ejecutando la inicialización (db:setup) en $init_container_id..."
     
     if ! docker container exec -t "$init_container_id" /bin/bash -c "RAILS_ENV=production bundle exec rails db:setup"; then
         show_warning "El comando db:setup finalizó con un código de error. Continuando con la limpieza..."
@@ -244,18 +286,15 @@ initialize_chatwoot_database() {
     # 3. Limpiar el stack TEMPORAL
     show_message "Eliminando el stack temporal '$init_stack_name'..."
     docker stack rm "$init_stack_name"
+    sleep 5 # Pequeña espera para liberar el volumen
     show_success "Stack temporal '$init_stack_name' eliminado."
 
     # 4. Eliminar el volumen de datos de la inicialización de forma robusta
     show_message "Intentando eliminar el volumen temporal '$postgres_volume_name'..."
     local attempts=0
-    local max_attempts=5
-    local success=0
-
-    while [ $attempts -lt $max_attempts ]; do
+    while [ $attempts -lt 5 ]; do
         if docker volume rm "$postgres_volume_name" 2>/dev/null; then
             show_success "Volumen temporal '$postgres_volume_name' eliminado."
-            success=1
             break
         else
             show_message "Intento $((attempts+1)): Volumen aún en uso. Esperando 5 segundos..."
@@ -263,8 +302,7 @@ initialize_chatwoot_database() {
             attempts=$((attempts+1))
         fi
     done
-
-    if [ $success -eq 0 ]; then
+    if [ $attempts -eq 5 ]; then
         show_warning "No se pudo eliminar el volumen '$postgres_volume_name'. Podría requerir eliminación manual."
     fi
 
@@ -280,9 +318,10 @@ initialize_chatwoot_database() {
     TEMP_FILES+=("$final_deploy_file")
     
     show_message "Desplegando chatwoot (Stack Final: $final_stack_name)..."
-    # Despliegue sin --env-file (CRÍTICO)
-    docker stack deploy -c "$final_deploy_file" "$final_stack_name"
     
+    # Procesa el YAML final de Chatwoot antes de desplegar
+    process_yaml_and_deploy "chatwoot" "$final_deploy_file"
+
     return 0
 }
 
@@ -301,27 +340,14 @@ deploy_stack() {
     fi
     TEMP_FILES+=("$stack_file")
 
-    # 2. Despliegue del Stack
-    # Despliegue sin --env-file (CRÍTICO)
-    docker stack deploy -c "$stack_file" "$tool_name"
-    
-    if [ $? -ne 0 ]; then
-        show_error "Error al desplegar el stack $tool_name."
-        return 1
-    fi
-    show_success "Stack $tool_name desplegado."
-    
-    # 3. Post-instalación (esperas para estabilidad)
-    if [ "$tool_name" == "redis" ] || [ "$tool_name" == "postgres" ]; then
-        show_message "Esperando a que $tool_name se estabilice (15 segundos)..."
-        sleep 15
-    fi
+    # 2. PROCESAMIENTO CRÍTICO Y DESPLIEGUE
+    process_yaml_and_deploy "$tool_name" "$stack_file"
 
     return 0
 }
 
 # -----------------------------------------------
-# 5. Flujo Principal
+# 4. Flujo Principal
 # -----------------------------------------------
 
 main_installation() {
@@ -347,15 +373,13 @@ main_installation() {
         fi
 
         if [ "$tool_name" == "chatwoot" ]; then
-            # Flujo de inicialización de Chatwoot
             initialize_chatwoot_database || cleanup 1
         else
-            # Flujo de despliegue estándar
             deploy_stack "$tool_name" || cleanup 1
         fi
     done
 
-    # 6. Mensaje final y limpieza
+    # 5. Mensaje final
     finalize_installation
 }
 

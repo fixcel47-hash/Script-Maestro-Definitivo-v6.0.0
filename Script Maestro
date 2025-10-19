@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR UNIFICADO DOCKER SWARM (v5.0.0 - MAESTRO FINAL KHUNTER)
+# INSTALADOR UNIFICADO DOCKER SWARM (v5.1.0 - MAESTRO FINAL CON URLS DIRECTAS)
 # Autor: Adaptado y corregido por Gemini AI (basado en Queen Novedad / Khunter)
-# Objetivo: Instalación robusta de stack Docker Swarm (Traefik, Portainer, Redis, Postgres, n8n, EvoAPI y Chatwoot)
+# Objetivo: Instalación robusta de stack Docker Swarm con Traefik, Portainer, Redis, Postgres, n8n, EvoAPI y Chatwoot.
 # =================================================================================
 
-SCRIPT_VERSION="5.0.0-FINAL"
+SCRIPT_VERSION="5.1.0-FINAL"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -28,22 +28,19 @@ AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwo
 # Subdominios predeterminados
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "db" "n8" "api" "chat")
 
-# URLs para descargar los archivos docker-compose/stack.yml
-# 🚨 ¡IMPORTANTE! Reemplaza 'TU_USUARIO/TU_REPO/main' con tu USUARIO/REPOSITORIO/RAMA REAL
-# El script descargará: https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main/chatwoot-stack.yml
-GITHUB_RAW_BASE="https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main"
-
+# 🚨 ADVERTENCIA: Usando las URLs de 'user-attachments' proporcionadas. Estas son temporales y caducarán.
+# Es crítico que el archivo 'chatwoot-init-stack.yml' contenga la corrección de seguridad de la Sección 2.
 declare -gA STACK_URLS=(
-    # Chatwoot utiliza dos archivos: el de inicialización (seguro) y el de despliegue final
-    [chatwoot]="${GITHUB_RAW_BASE}/chatwoot-stack.yml"      
-    [chatwoot-init]="${GITHUB_RAW_BASE}/chatwoot-init.yml"  
+    # Chatwoot utiliza dos archivos
+    [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
+    [chatwoot-init]="https://github.com/user-attachments/files/22988366/chatwoot-init-stack.yml" 
     
-    [evoapi]="${GITHUB_RAW_BASE}/evoapi-stack.yml"
-    [n8n]="${GITHUB_RAW_BASE}/n8n-stack.yml"
-    [portainer]="${GITHUB_RAW_BASE}/portainer-stack.yml"
-    [postgres]="${GITHUB_RAW_BASE}/postgres-stack.yml"
-    [redis]="${GITHUB_RAW_BASE}/redis-stack.yml"
-    [traefik]="${GITHUB_RAW_BASE}/traefik-stack.yml"
+    [evoapi]="https://github.com/user-attachments/files/22956481/evoapi-stack.yml"
+    [n8n]="https://github.com/user-attachments/files/22956487/n8n-stack.yml"
+    [portainer]="https://github.com/user-attachments/files/22956492/portainer-stack.yml"
+    [postgres]="https://github.com/user-attachments/files/22956495/postgres-stack.yml"
+    [redis]="https://github.com/user-attachments/files/22956503/redis-stack.yml"
+    [traefik]="https://github.com/user-attachments/files/22956506/traefik-stack.yml"
 )
 
 # -----------------------------------------------
@@ -206,13 +203,14 @@ create_networks_and_dirs() {
 initialize_chatwoot_database() {
     local final_stack_name="chatwoot"
     local init_stack_name="chatwoot-init"
-    # El volumen que crea el stack de inicialización
+    # El volumen que crea el stack de inicialización (el stack de inicialización usa el nombre del stack temporal)
     local postgres_volume_name="${init_stack_name}_chatwoot-postgres-data"
     
     show_message "Iniciando proceso de inicialización de Chatwoot (Stack Temporal: $init_stack_name)..."
     
     # 1. Descargar y desplegar el stack TEMPORAL de inicialización
     local temp_file="$DOCKER_DIR/$final_stack_name/${init_stack_name}.yml"
+    # Nota: Usamos la clave STACK_URLS[chatwoot-init] que apunta al archivo 'chatwoot-init-stack.yml'
     curl -fsSL --connect-timeout $DOWNLOAD_TIMEOUT "${STACK_URLS[chatwoot-init]}" -o "$temp_file"
     if [ $? -ne 0 ]; then
         show_error "No se pudo descargar el stack de inicialización de Chatwoot. Abortando."
@@ -228,6 +226,7 @@ initialize_chatwoot_database() {
     sleep 45
 
     # 2. Ejecutar la migración
+    # El servicio en el YAML corregido es 'chatwoot-setup'
     local init_container_id=$(docker service ps -q "${init_stack_name}_chatwoot-setup" --filter "desired-state=running" | head -n 1)
     
     if [ -z "$init_container_id" ]; then

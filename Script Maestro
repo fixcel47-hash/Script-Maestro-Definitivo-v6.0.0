@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR DOCKER SWARM MAJORADO (v5.4.4 - FIX: RESOLUCIÓN DE RED CHATWOOT)
-# Arreglo del fallo crítico de conexión/resolución de host en la inicialización de Chatwoot.
+# INSTALADOR DOCKER SWARM MAJORADO (v5.4.5 - FIX: ESCAPING YAML EN COMANDO CHATWOOT)
+# Arreglo del fallo crítico de sintaxis 'yaml: line 22: found unknown escape character'.
 # =================================================================================
 
-SCRIPT_VERSION="5.4.4-FINAL-CHATWOOT-NETWORK-FIX"
+SCRIPT_VERSION="5.4.5-FINAL-YAML-ESCAPE-FIX"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -226,9 +226,9 @@ pre_pull_images() {
 }
 
 
-# --- Inicialización de Chatwoot (FIX V5.4.4 - DB Check) ---
+# --- Inicialización de Chatwoot (FIX V5.4.5 - YAML Escaping) ---
 initialize_chatwoot_database() {
-    show_message "Iniciando base de datos de Chatwoot (Proceso avanzado, FIX garantizado V5.4.4 - DB Health Check)..."
+    show_message "Iniciando base de datos de Chatwoot (Proceso avanzado, FIX garantizado V5.4.5 - YAML Escaping)..."
     
     local init_stack_file="/tmp/chatwoot-init-stack.yml"
     local postgres_volume_name="chatwoot_postgres"
@@ -255,23 +255,25 @@ services:
 
   chatwoot-init:
     image: chatwoot/chatwoot:latest
-    # FIX V5.4.4: Usar bucle de espera con psql para verificar la conectividad del host antes de ejecutar Rails.
-    command: ["/bin/sh", "-c", "
-      DB_HOST=chatwoot-postgres;
-      DB_USER=postgres;
-      DB_PASS=$COMMON_PASSWORD;
-      
-      echo 'Esperando que PostgreSQL esté listo y resuelva el host $DB_HOST...'
-      
-      # Bucle de verificación de conexión de psql (el método más robusto)
-      until PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -c '\\q'; do
-        echo 'PostgreSQL aún no está listo o el host no resuelve. Esperando 5 segundos...'
-        sleep 5
-      done
-      
-      echo 'PostgreSQL está listo. Iniciando Chatwoot DB setup...'
-      bundle exec rails db:create db:migrate db:seed
-    "]
+    # FIX V5.4.5: Se usa la notación de bloque scalar (|) para evitar el error de escape de YAML en comandos multilínea.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        DB_HOST=chatwoot-postgres;
+        DB_USER=postgres;
+        DB_PASS=$COMMON_PASSWORD;
+        
+        echo 'Esperando que PostgreSQL esté listo y resuelva el host $DB_HOST...'
+        
+        # Bucle de verificación de conexión de psql (el método más robusto)
+        until PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -c '\q'; do
+          echo 'PostgreSQL aún no está listo o el host no resuelve. Esperando 5 segundos...'
+          sleep 5
+        done
+        
+        echo 'PostgreSQL está listo. Iniciando Chatwoot DB setup...'
+        bundle exec rails db:create db:migrate db:seed
     environment:
       - POSTGRES_HOST=chatwoot-postgres
       - POSTGRES_PORT=5432
@@ -425,7 +427,7 @@ install_docker_tool() {
 main() {
     echo -e "\n${GREEN}===========================================${NC}"
     echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀   ${NC}"
-    echo -e "${GREEN}      (V5.4.4 - FIX DB NETWORK CHECK)    ${NC}"
+    echo -e "${GREEN}      (V5.4.5 - FIX YAML ESCAPING)       ${NC}"
     echo -e "${GREEN}===========================================${NC}\n"
 
     if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
@@ -502,7 +504,7 @@ finalize_installation() {
         
         local default_subdomain=""
         for j in "${!AVAILABLE_TOOLS[@]}"; do
-            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then default_subdomain="${DEFAULT_SUBDOMAINS[$j]}"; break; fi
+            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then default_subdomain="${DEFAULT_SUBDOMAINS[$j]}"; break; end
         done
 
         if [ -f "$subdomain_file" ]; then

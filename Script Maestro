@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR UNIFICADO DOCKER SWARM (v7.1.0 - LIMPIO Y COMPLETO)
-# Autor: Adaptado por Gemini AI (Libre de API Token)
-# Objetivo: Instalación robusta de stack Docker Swarm (Traefik, Portainer, DBs, n8n, EvoAPI, Chatwoot)
-# Muestra el proceso en el terminal con mensajes de [INFO] y [SUCCESS].
+# INSTALADOR UNIFICADO DOCKER SWARM (v7.2.0 - MODO PROCESO DETALLADO)
+# Autor: Adaptado por Gemini AI (Muestra TODO el proceso en terminal)
+# Objetivo: Instalación robusta de stack Docker Swarm, con proceso detallado visible.
 # =================================================================================
 
-SCRIPT_VERSION="7.1.0-FINAL"
+SCRIPT_VERSION="7.2.0-DETALLADO"
 
 # --- Colores para mensajes ---
 RED='\033[0;31m'
@@ -41,7 +40,7 @@ declare -gA STACK_URLS=(
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
 )
 
-# --- 2. Funciones de Utilidad (Muestran el proceso en el terminal) ---
+# --- 2. Funciones de Utilidad (Modificada para mostrar el proceso completo) ---
 show_message() { echo -e "${BLUE}[INFO]${NC} $1"; }
 show_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
@@ -51,20 +50,21 @@ run_command() {
     local message="$2"
     show_message "$message"
     
-    # Ejecuta el comando y captura el resultado/código de salida
+    # 1. Ejecuta el comando y captura el resultado/código de salida
     output=$(eval "$command" 2>&1)
     exit_code=$?
     
-    # Muestra el output detallado solo en caso de fallo para un mejor diagnóstico
-    if [ $exit_code -ne 0 ]; then
-        echo -e "--------------------------- INICIO OUTPUT ---------------------------"
-        echo "$output"
-        echo -e "--------------------------- FIN OUTPUT ----------------------------"
-        show_error "Error al ejecutar el comando. Código: $exit_code"
-        return 1
-    else
+    # 2. CRÍTICO: MUESTRA SIEMPRE el output capturado para ver el proceso
+    echo -e "${YELLOW}--- INICIO OUTPUT DETALLADO del comando: $command ---${NC}"
+    echo "$output"
+    echo -e "${YELLOW}--- FIN OUTPUT DETALLADO ---${NC}"
+
+    if [ $exit_code -eq 0 ]; then
         show_success "Comando completado exitosamente."
         return 0
+    else
+        show_error "Error al ejecutar el comando. Código: $exit_code"
+        return 1
     fi
 }
 register_temp_file() {
@@ -223,7 +223,7 @@ check_and_install_dependencies() {
         show_message "Instalando Docker Engine y Docker Compose..."
         curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
         register_temp_file "/tmp/get-docker.sh"
-        sh /tmp/get-docker.sh || { show_error "Fallo al instalar Docker."; return 1; }
+        run_command "sh /tmp/get-docker.sh" "Ejecutando script de instalación de Docker" || { show_error "Fallo al instalar Docker."; return 1; }
     fi
     
     if ! docker info | grep -q "Swarm: active"; then
@@ -239,7 +239,7 @@ install_security_tools() {
     # Fail2Ban: Defensa activa contra ataques de fuerza bruta
     run_command "apt install fail2ban -y" "Instalando Fail2Ban..." || return 1
     
-    # rkhunter: Auditoría de rootkits
+    # rkhunter: Auditoría de rootkits (AQUÍ ES DONDE ESTABA "COLGADO")
     run_command "apt install rkhunter -y" "Instalando rkhunter..." || return 1
     
     show_success "Herramientas de seguridad instaladas correctamente."

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="1.3.2" # Versión actualizada: Purga completa de caracteres invisibles
+SCRIPT_VERSION="2.0.0" # Versión actualizada: Eliminación de dependencia de API y tokens
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -170,6 +170,9 @@ create_stack_file_locally() {
 
     show_message "Creando archivo de stack localmente para $tool_name..."
 
+    # NOTA: Las variables de shell como $BASE_DOMAIN, $COMMON_PASSWORD y $SECRET_KEY
+    # se expanden directamente aquí porque se usan dentro de un heredoc (cat << EOF).
+    
     case $tool_name in
         traefik)
             cat > "$local_path" << TRAEFIK_EOF
@@ -184,7 +187,7 @@ services:
       - --providers.docker.exposedbydefault=false
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
-      - --certificatesresolvers.letsencrypt.acme.email=admin@REPLACE_DOMAIN
+      - --certificatesresolvers.letsencrypt.acme.email=admin@$BASE_DOMAIN
       - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.letsencrypt.acme.caserver=https://acme-v02.api.letsencrypt.org/directory
     ports:
@@ -208,12 +211,12 @@ services:
         # Habilitar Traefik y router para la interfaz web (opcional)
         - traefik.enable=true
         - traefik.http.routers.traefik-secure.entrypoints=websecure
-        - traefik.http.routers.traefik-secure.rule=Host(\`REPLACE_SUBDOMAIN.REPLACE_DOMAIN\`)
+        - traefik.http.routers.traefik-secure.rule=Host(\`proxy.$BASE_DOMAIN\`)
         - traefik.http.routers.traefik-secure.service=api@internal
         - traefik.http.routers.traefik-secure.middlewares=auth-traefik@docker
         - traefik.http.routers.traefik-secure.tls.certresolver=letsencrypt
-        # Middleware de autenticación básica (Usuario: admin, Contraseña: COMMON_PASSWORD)
-        - traefik.http.middlewares.auth-traefik.basicauth.users=admin:\$\$apr1\$\$LhNfWw4S\$\$E.w6oK3s3.1t600w9YQ0M/
+        # Middleware de autenticación básica (Usuario: admin, Contraseña: admin_password)
+        - traefik.http.middlewares.auth-traefik.basicauth.users=admin:\$\$apr1\$\$7t.l320O\$\$07v1/Ym2fJz2hR19L05xI.
     networks:
       - frontend
 
@@ -222,7 +225,7 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/traefik/letsencrypt
+      device: $DOCKER_DIR/traefik/letsencrypt
       o: bind
 
 networks:
@@ -249,7 +252,7 @@ services:
       labels:
         - traefik.enable=true
         - traefik.http.routers.portainer-secure.entrypoints=websecure
-        - traefik.http.routers.portainer-secure.rule=Host(\`REPLACE_SUBDOMAIN.REPLACE_DOMAIN\`)
+        - traefik.http.routers.portainer-secure.rule=Host(\`admin.$BASE_DOMAIN\`)
         - traefik.http.routers.portainer-secure.service=portainer
         - traefik.http.routers.portainer-secure.tls.certresolver=letsencrypt
         - traefik.http.services.portainer.loadbalancer.server.port=9000
@@ -261,7 +264,7 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/portainer/data
+      device: $DOCKER_DIR/portainer/data
       o: bind
 
 networks:
@@ -277,9 +280,11 @@ services:
   redis:
     image: redis:7.2-alpine
     container_name: redis-server
-    command: redis-server --requirepass "\$COMMON_PASSWORD"
+    # Escapar $ para que la variable se pase como string a Redis
+    command: redis-server --requirepass "\$COMMON_PASSWORD" 
     environment:
-      - REDIS_PASSWORD=$COMMON_PASSWORD
+      # Expansión directa de la variable de shell
+      - REDIS_PASSWORD=$COMMON_PASSWORD 
     volumes:
       - redis_data:/data
     deploy:
@@ -288,7 +293,6 @@ services:
         constraints:
           - node.role == manager
       labels:
-        # Evitar que Traefik exponga Redis directamente
         - traefik.enable=false
     networks:
       - backend
@@ -298,7 +302,7 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/redis/data
+      device: $DOCKER_DIR/redis/data
       o: bind
 
 networks:
@@ -325,7 +329,6 @@ services:
         constraints:
           - node.role == manager
       labels:
-        # Evitar que Traefik exponga PostgreSQL directamente
         - traefik.enable=false
     networks:
       - backend
@@ -335,7 +338,7 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/postgres/data
+      device: $DOCKER_DIR/postgres/data
       o: bind
 
 networks:
@@ -351,7 +354,7 @@ services:
   n8n:
     image: n8n.io/n8n:latest
     environment:
-      - N8N_HOST=REPLACE_SUBDOMAIN.REPLACE_DOMAIN
+      - N8N_HOST=n8.$BASE_DOMAIN
       - N8N_PORT=5678
       - N8N_PROTOCOL=https
       - NODE_ENV=production
@@ -375,7 +378,7 @@ services:
       labels:
         - traefik.enable=true
         - traefik.http.routers.n8n-secure.entrypoints=websecure
-        - traefik.http.routers.n8n-secure.rule=Host(\`REPLACE_SUBDOMAIN.REPLACE_DOMAIN\`)
+        - traefik.http.routers.n8n-secure.rule=Host(\`n8.$BASE_DOMAIN\`)
         - traefik.http.routers.n8n-secure.service=n8n
         - traefik.http.routers.n8n-secure.tls.certresolver=letsencrypt
         - traefik.http.services.n8n.loadbalancer.server.port=5678
@@ -388,7 +391,7 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/n8n/data
+      device: $DOCKER_DIR/n8n/data
       o: bind
 
 networks:
@@ -407,7 +410,7 @@ services:
     image: evocontainer/evoapi-plus:latest
     environment:
       - SERVER_PORT=8000
-      - DOMAIN_URL=https://REPLACE_SUBDOMAIN.REPLACE_DOMAIN
+      - DOMAIN_URL=https://evoapi.$BASE_DOMAIN
       - JWT_SECRET=$SECRET_KEY
       - REDIS_URI=redis://redis-server:6379/0
       - DATABASE_URL=postgresql://postgres:$COMMON_PASSWORD@postgres:5432/evoapi_db
@@ -422,7 +425,7 @@ services:
       labels:
         - traefik.enable=true
         - traefik.http.routers.evoapi-secure.entrypoints=websecure
-        - traefik.http.routers.evoapi-secure.rule=Host(\`REPLACE_SUBDOMAIN.REPLACE_DOMAIN\`)
+        - traefik.http.routers.evoapi-secure.rule=Host(\`evoapi.$BASE_DOMAIN\`)
         - traefik.http.routers.evoapi-secure.service=evoapi
         - traefik.http.routers.evoapi-secure.tls.certresolver=letsencrypt
         - traefik.http.services.evoapi.loadbalancer.server.port=8000
@@ -435,13 +438,13 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/evoapi/logs
+      device: $DOCKER_DIR/evoapi/logs
       o: bind
   evoapi_files:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/evoapi/files
+      device: $DOCKER_DIR/evoapi/files
       o: bind
 
 networks:
@@ -457,7 +460,6 @@ version: '3.8'
 
 services:
   chatwoot-postgres:
-    # Usamos pgvector para soportar funcionalidades avanzadas
     image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_DB=chatwoot
@@ -483,16 +485,16 @@ services:
       - RAILS_ENV=production
       - NODE_ENV=production
       - SECRET_KEY_BASE=$SECRET_KEY
-      - FRONTEND_URL=https://REPLACE_SUBDOMAIN.REPLACE_DOMAIN
+      - FRONTEND_URL=https://chat.$BASE_DOMAIN
       - POSTGRES_HOST=chatwoot-postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DATABASE=chatwoot
       - POSTGRES_USERNAME=postgres
       - POSTGRES_PASSWORD=$COMMON_PASSWORD
       - REDIS_URL=redis://redis-server:6379/4
-      # Configuración de ActionMailer, cambiar por credenciales reales
-      - MAILER_SENDER_EMAIL=chatwoot@REPLACE_DOMAIN
-      - SMTP_ADDRESS=smtp.sendgrid.net
+      # Configuración de ActionMailer - Reemplazar si es necesario
+      - MAILER_SENDER_EMAIL=chatwoot@$BASE_DOMAIN
+      - SMTP_ADDRESS=smtp.example.com
       - SMTP_PORT=587
       - SMTP_USERNAME=REPLACE_SMTP_USERNAME
       - SMTP_PASSWORD=REPLACE_SMTP_PASSWORD
@@ -508,7 +510,7 @@ services:
       labels:
         - traefik.enable=true
         - traefik.http.routers.chatwoot-secure.entrypoints=websecure
-        - traefik.http.routers.chatwoot-secure.rule=Host(\`REPLACE_SUBDOMAIN.REPLACE_DOMAIN\`)
+        - traefik.http.routers.chatwoot-secure.rule=Host(\`chat.$BASE_DOMAIN\`)
         - traefik.http.routers.chatwoot-secure.service=chatwoot-web
         - traefik.http.routers.chatwoot-secure.tls.certresolver=letsencrypt
         - traefik.http.services.chatwoot-web.loadbalancer.server.port=3000
@@ -557,13 +559,13 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/chatwoot/postgres_data
+      device: $DOCKER_DIR/chatwoot/postgres_data
       o: bind
   chatwoot_storage:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/chatwoot/storage
+      device: $DOCKER_DIR/chatwoot/storage
       o: bind
 CHATWOOT_EOF
             ;;
@@ -578,6 +580,7 @@ CHATWOOT_EOF
     return 0
 }
 
+# La función download_from_api ahora es un alias de la función local
 download_from_api() {
     create_stack_file_locally "$1" "$2"
 }
@@ -649,8 +652,7 @@ install_dependencies() {
     # Actualizar repositorios
     apt-get update
 
-    # Instalar jo
-    apt-get install -y jo
+    # jo ya no es necesario
     
     if ! command -v docker &> /dev/null; then
         show_message "Instalando Docker..."
@@ -757,6 +759,7 @@ create_volume_directories() {
 
     show_message "Creando directorios para volúmenes de $tool_name..."
 
+    # Buscar todas las rutas de volúmenes en el archivo de stack
     local volume_paths=$(grep -oP "device: \K/[^\s]+" "$stack_file" | sort | uniq)
 
     if [ -z "$volume_paths" ]; then
@@ -764,6 +767,7 @@ create_volume_directories() {
         return
     fi
 
+    # Crear cada directorio encontrado
     for path in $volume_paths; do
         show_message "Creando directorio: $path"
         run_command "mkdir -p \"$path\"" "Creando directorio $path..."
@@ -789,25 +793,24 @@ initialize_chatwoot_database() {
     local redis_ready=false
     local max_attempts=60
     local attempt=0
-    container_id=$(docker ps --filter "name=redis-server" --format "{{.ID}}")
+    # Esperar a que el contenedor de Redis inicie
+    container_id=$(docker ps --filter "label=com.docker.swarm.service.name=redis_redis" --format "{{.ID}}")
 
     while [ $attempt -lt $max_attempts ] && [ "$redis_ready" = false ]; do
         if [ -n "$container_id" ]; then
-            if docker exec "$container_id" redis-cli ping 2>/dev/null | grep -q "PONG"; then
+            # El contenedor de Redis puede estar ejecutándose pero el servidor interno no listo
+            if docker exec "$container_id" redis-cli -a "$COMMON_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
                 redis_ready=true
                 show_success "Redis está listo"
             else
                 sleep 5
                 attempt=$((attempt + 1))
-                if [ $((attempt % 12)) -eq 0 ]; then
-                    show_message "Esperando Redis... ($((attempt * 5))/300 segundos)"
-                fi
             fi
         else
-            show_message "Esperando a que Redis inicie..."
+            show_message "Esperando a que Redis inicie su contenedor..."
             sleep 5
             attempt=$((attempt + 1))
-            container_id=$(docker ps --filter "name=redis-server" --format "{{.ID}}")
+            container_id=$(docker ps --filter "label=com.docker.swarm.service.name=redis_redis" --format "{{.ID}}")
         fi
     done
 
@@ -819,6 +822,8 @@ initialize_chatwoot_database() {
     # --- Create Init Stack ---
     show_message "Creando stack temporal para inicialización de base de datos..."
     local init_stack_file="/tmp/chatwoot-init-stack.yml"
+    
+    # Usar las variables globales para el stack de inicialización
     cat > "$init_stack_file" << EOF
 version: '3.8'
 
@@ -880,7 +885,7 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: /home/docker/chatwoot/postgres_data
+      device: $DOCKER_DIR/chatwoot/postgres_data
       o: bind
 EOF
     
@@ -895,12 +900,13 @@ EOF
 
     show_success "Stack de inicialización desplegado"
     
-    # --- Wait for Postgres container to run ---
+    # --- Wait for Postgres ready (pg_isready) ---
     local postgres_container_id=""
     local postgres_attempt=0
     local max_postgres_attempt=30
     
     show_message "Esperando a que el contenedor de PostgreSQL inicie..."
+    # Buscar el ID del contenedor
     while [ $postgres_attempt -lt $max_postgres_attempt ] && [ -z "$postgres_container_id" ]; do
         postgres_container_id=$(docker ps -q --filter "label=com.docker.swarm.service.name=chatwoot-init_chatwoot-postgres")
         if [ -z "$postgres_container_id" ]; then
@@ -915,13 +921,14 @@ EOF
         return 1
     fi
 
-    # --- Wait for Postgres ready (pg_isready) ---
+    # Verificar conexión a PostgreSQL
     show_message "Verificando disponibilidad de PostgreSQL..."
     local pg_ready=false
     local max_pg_wait=60
     local pg_attempt=0
 
     while [ $pg_attempt -lt $max_pg_wait ] && [ "$pg_ready" = false ]; do
+        # Esperar a que pg_isready responda
         if docker exec "$postgres_container_id" pg_isready -U postgres -h localhost >/dev/null 2>&1; then
             pg_ready=true
             show_success "PostgreSQL está listo"
@@ -963,8 +970,6 @@ EOF
         
         if [ $((wait_time % 60)) -eq 0 ]; then
             show_message "Inicializando base de datos... ($wait_time/$max_wait segundos)"
-            show_message "Estado actual de inicialización:"
-            docker service logs chatwoot-init_chatwoot-init --tail 5 2>/dev/null | tail -3
         fi
     done
     
@@ -1001,32 +1006,31 @@ install_docker_tool() {
     read -p "Ingrese el subdominio para $tool_name [$default_subdomain]: " SUBDOMAIN
     SUBDOMAIN=${SUBDOMAIN:-$default_subdomain}
 
-    # Guardar el subdominio personalizado en el array (por si acaso)
-    CUSTOM_SUBDOMAINS[$tool_index]=$SUBDOMAIN
-
     # Guardar el subdominio en un archivo para referencia futura
     subdomain_file="$tool_dir/.subdomain"
     echo "$SUBDOMAIN" > "$subdomain_file"
     register_temp_file "$subdomain_file"
     
-    # Descargar (crear localmente) archivos de configuración
+    # Crear archivos de configuración localmente
     show_message "Creando archivos de configuración para $tool_name..."
     stack_file="$tool_dir/$tool_name-stack.yml"
-    download_from_api "$tool_name" "$stack_file"
     
-    # Crear archivo temporal para reemplazar variables
+    # Uso de la función local que ahora tiene el contenido embebido
+    download_from_api "$tool_name" "$stack_file" 
+    
+    # Usar el archivo creado localmente como archivo de despliegue final
     deploy_file="$tool_dir/$tool_name-deploy.yml"
     cp "$stack_file" "$deploy_file"
     register_temp_file "$deploy_file"
 
-    # Reemplazar las variables en el archivo de stack
-    sed -i "s|REPLACE_PASSWORD|$COMMON_PASSWORD|g" "$deploy_file"
-    sed -i "s|REPLACE_SUBDOMAIN|$SUBDOMAIN|g" "$deploy_file"
-    sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$deploy_file"
-    sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$deploy_file"
-    sed -i "s|REPLACE_SMTP_USERNAME|your_smtp_username|g" "$deploy_file"
-    sed -i "s|REPLACE_SMTP_PASSWORD|your_smtp_password|g" "$deploy_file"
-
+    
+    if [ "$tool_name" = "chatwoot" ]; then
+        # Reemplazar placeholders de SMTP
+        sed -i "s|REPLACE_SMTP_USERNAME|your_smtp_username|g" "$deploy_file"
+        sed -i "s|REPLACE_SMTP_PASSWORD|your_smtp_password|g" "$deploy_file"
+        
+        show_warning "Recuerde configurar las variables SMTP_USERNAME y SMTP_PASSWORD en el archivo de stack de Chatwoot ($deploy_file) para el envío de correos."
+    fi
 
     # Crear directorios para volúmenes
     create_volume_directories "$deploy_file" "$tool_name"
@@ -1035,6 +1039,7 @@ install_docker_tool() {
     if [ "$tool_name" = "chatwoot" ]; then
         show_message "Chatwoot detectado - se requiere inicialización de base de datos"
         
+        # Verificar que Redis esté desplegado 
         if ! docker service ls | grep -q "redis_redis"; then
             show_error "Redis debe estar desplegado antes de instalar Chatwoot"
             cleanup 1
@@ -1074,8 +1079,8 @@ install_docker_tool() {
 
 # Función principal
 main() {
-    show_message "Iniciando la instalación automatizada de herramientas Docker..."
-    
+    show_message "Iniciando la instalación automatizada de herramientas Docker (Versión API-Free)..."
+
     # Instalar dependencias
     install_dependencies
     
@@ -1087,11 +1092,6 @@ main() {
     
     # Crear redes Docker
     create_docker_networks
-
-    # Inicializar array de subdominios personalizados
-    for i in "${!SELECTED_TOOLS[@]}"; do
-        CUSTOM_SUBDOMAINS[$i]=""
-    done
 
     # Instalar herramientas Docker seleccionadas en orden específico
     show_message "Instalando servicios en orden de dependencias..."
@@ -1136,13 +1136,10 @@ main() {
 
         if [ $tool_index -ge 0 ]; then
             subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
+            subdomain="${DEFAULT_SUBDOMAINS[$tool_index]}"
+            
             if [ -f "$subdomain_file" ]; then
                 subdomain=$(cat "$subdomain_file")
-            else
-                subdomain="${CUSTOM_SUBDOMAINS[$tool_index]}"
-                if [ -z "$subdomain" ]; then
-                    subdomain="${DEFAULT_SUBDOMAINS[$tool_index]}"
-                fi
             fi
 
             echo "- ${tool_name^}: https://$subdomain.$BASE_DOMAIN"
@@ -1153,3 +1150,13 @@ main() {
     echo "Información de credenciales:"
     echo "- Contraseña común: $COMMON_PASSWORD"
     echo "- Clave secreta: $SECRET_KEY"
+    echo ""
+    echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"
+    echo ""
+    echo "${YELLOW}*** ATENCIÓN: La contraseña de Traefik (https://proxy.$BASE_DOMAIN) es: admin_password (Usuario: admin) ***${NC}"
+
+    cleanup 0 true
+}
+
+# Ejecutar función principal
+main

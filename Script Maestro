@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR DOCKER SWARM MAJORADO (v5.4.5 - FIX: ESCAPING YAML EN COMANDO CHATWOOT)
-# Arreglo del fallo crítico de sintaxis 'yaml: line 22: found unknown escape character' y DB Health Check.
+# INSTALADOR DOCKER SWARM MAJORADO (v5.5.0 - MAESTRO FINAL SIN API)
+# Script independiente que elimina dependencias de API y usa URLs directas de GitHub.
 # =================================================================================
 
-SCRIPT_VERSION="5.4.5-FINAL-YAML-ESCAPE-FIX"
+SCRIPT_VERSION="5.5.0-FINAL-API-FREE"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -19,10 +19,9 @@ SCRIPT_PATH=$(readlink -f "$0")
 TEMP_FILES=()
 DOWNLOAD_TIMEOUT=30
 
-# URLs COMPLETAS y CORRECTAS
+# URLs COMPLETAS y CORRECTAS para DESCARGA DIRECTA (SIN API)
 declare -gA STACK_URLS=(
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
-    [chatwoot-init]="https://github.com/user-attachments/files/22988366/chatwoot-init-stack.yml" 
     [evoapi]="https://github.com/user-attachments/files/22956481/evoapi-stack.yml"
     [n8n]="https://github.com/user-attachments/files/22956487/n8n-stack.yml"
     [portainer]="https://github.com/user-attachments/files/22956492/portainer-stack.yml"
@@ -179,6 +178,7 @@ download_stack_content() {
     
     show_message "Descargando stack de $tool_name desde: $download_url"
 
+    # curl sin -H "Authorization: Bearer \$API_TOKEN"
     if ! curl -fsSL --max-time $DOWNLOAD_TIMEOUT -o "$local_path" "$download_url"; then
         show_error "Fallo al descargar el archivo stack para $tool_name. Código de error: $?."
         cleanup 1; exit 1
@@ -199,7 +199,7 @@ download_stack_content() {
 initialize_docker_swarm() {
     show_message "Verificando estado de Docker Swarm..."
     if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
-        run_command "docker swarm init" "Inicializando Docker Swarm..." 
+        run_command "docker swarm init --advertise-addr \$(hostname -I | awk '{print \$1}')" "Inicializando Docker Swarm..."
     else
         show_message "Docker Swarm ya está activo"
     fi
@@ -226,14 +226,14 @@ pre_pull_images() {
 }
 
 
-# --- Inicialización de Chatwoot (FIX V5.4.5 - YAML Escaping) ---
+# --- Inicialización de Chatwoot (FIX V5.5.0 - DB Health Check Robusto) ---
 initialize_chatwoot_database() {
-    show_message "Iniciando base de datos de Chatwoot (Proceso avanzado, FIX garantizado V5.4.5 - YAML Escaping)..."
+    show_message "Iniciando base de datos de Chatwoot (Proceso avanzado con DB Health Check)..."
     
     local init_stack_file="/tmp/chatwoot-init-stack.yml"
     local postgres_volume_name="chatwoot_postgres"
 
-    # 1. Crear stack de inicialización con la configuración de variables
+    # 1. Crear stack de inicialización
     cat > "$init_stack_file" << EOF_INIT
 version: '3.8'
 
@@ -255,7 +255,7 @@ services:
 
   chatwoot-init:
     image: chatwoot/chatwoot:latest
-    # FIX V5.4.5: Se usa la notación de bloque scalar (|) para evitar el error de escape de YAML en comandos multilínea.
+    # FIX V5.5.0: Comando robusto con DB Health Check y notación de bloque scalar (|)
     command:
       - /bin/sh
       - -c
@@ -264,11 +264,11 @@ services:
         DB_USER=postgres;
         DB_PASS=$COMMON_PASSWORD;
         
-        echo 'Esperando que PostgreSQL esté listo y resuelva el host $DB_HOST...'
+        echo 'Esperando que PostgreSQL esté listo...'
         
         # Bucle de verificación de conexión de psql (el método más robusto)
-        until PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -c '\q'; do
-          echo 'PostgreSQL aún no está listo o el host no resuelve. Esperando 5 segundos...'
+        until PGPASSWORD=\$DB_PASS psql -h \$DB_HOST -U \$DB_USER -c '\q'; do
+          echo 'PostgreSQL aún no está listo. Esperando 5 segundos...'
           sleep 5
         done
         
@@ -299,7 +299,7 @@ EOF_INIT
     
     register_temp_file "$init_stack_file"
     
-    # 2. Crear volumen de datos (lo que será el volumen permanente)
+    # 2. Crear volumen de datos
     run_command "docker volume create --driver local --opt type=none --opt device=$DOCKER_DIR/chatwoot/postgres_data --opt o=bind $postgres_volume_name" "Creando volumen persistente para Chatwoot DB..."
     
     # 3. Desplegar stack de inicialización
@@ -316,7 +316,6 @@ EOF_INIT
         elif echo "$service_status" | grep -q "Failed" || echo "$service_status" | grep -q "Shutdown"; then
             show_error "La inicialización de la base de datos falló o se cerró inesperadamente."
             show_message "Extrayendo logs del servicio fallido chatwoot-init_chatwoot-init para diagnóstico..."
-            # Muestra los logs en la salida para el usuario
             docker service logs chatwoot-init_chatwoot-init --tail 50
             break
         fi
@@ -375,26 +374,23 @@ install_docker_tool() {
     sed -i "s|RAILS_INBOUND_EMAIL_PASSWORD=.*|RAILS_INBOUND_EMAIL_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
     sed -i "s|PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$COMMON_PASSWORD|g" "$deploy_file"
 
-    # CORRECCIÓN CRÍTICA DE REDIS V4.7 (FIX FINAL: ELIMINAR COMMAND)
+    # CORRECCIÓN CRÍTICA DE REDIS (FIX: ELIMINAR COMMAND)
     if [ "$tool_name" == "redis" ]; then
-        show_message "Aplicando **corrección crítica de configuración V4.7: Asegurando autenticación Redis**."
-        
-        # 1. Reemplazar 'command' con la configuración segura (depende del YAML del usuario)
+        show_message "Aplicando corrección de configuración: Asegurando autenticación Redis."
+        # 1. Eliminar 'command: redis-server' para usar la config de entorno con REDIS_PASSWORD
         sed -i '/command: redis-server/d' "$deploy_file" 
-
+        
         # 2. Inyecta variables de entorno en redisinsight (si el YAML no las tiene)
         if ! grep -q "REDISINSIGHT_PASSWORD" "$deploy_file"; then
-            # Añadir las variables de entorno después de la imagen de RedisInsight
             sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD='$COMMON_PASSWORD'\n      - REDIS_PASSWORD='$COMMON_PASSWORD'' "$deploy_file"
         fi
-        
-        show_success "Corrección de Redis V4.7 aplicada."
+        show_success "Corrección de Redis aplicada."
     fi
     
     # CORRECCIÓN PARA EvoAPI (Error P1000)
     if [ "$tool_name" == "evoapi" ]; then
         show_message "Aplicando corrección de credenciales para EvoAPI (Error P1000)."
-        # Inyecta la contraseña directamente en la DATABASE_URL (si usa el formato de placeholder)
+        # Inyecta la contraseña directamente en la DATABASE_URL
         sed -i "s/postgres:\${COMMON_PASSWORD}/postgres:$COMMON_PASSWORD/g" "$deploy_file"
         show_success "Corrección de EvoAPI aplicada."
     fi
@@ -426,8 +422,8 @@ install_docker_tool() {
 
 main() {
     echo -e "\n${GREEN}===========================================${NC}"
-    echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀   ${NC}"
-    echo -e "${GREEN}      (V5.4.5 - FIX YAML ESCAPING)       ${NC}"
+    echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀  ${NC}"
+    echo -e "${GREEN}       (V5.5.0 - FINAL SIN API)            ${NC}"
     echo -e "${GREEN}===========================================${NC}\n"
 
     if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
@@ -469,10 +465,75 @@ EOL
     
     for i in "${!INSTALL_ORDER[@]}"; do
         tool_name="${INSTALL_ORDER[$i]}"
-        default_subdomain="${DEFAULT_SUBDOMAINS[$i]}"
+        default_subdomain=""
+        
+        # Buscar el subdominio predeterminado de forma segura
+        local tool_index=-1
+        for j in "${!AVAILABLE_TOOLS[@]}"; do
+            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then tool_index=$j; break; fi
+        done
+        
+        if [ $tool_index -ge 0 ]; then
+            default_subdomain="${DEFAULT_SUBDOMAINS[$tool_index]}"
+        else
+            default_subdomain="unknown"
+        fi
 
         if [ "$tool_name" == "chatwoot" ]; then
             # Inicialización de DB de Chatwoot (Proceso avanzado)
             if initialize_chatwoot_database; then
                 show_success "Base de datos de Chatwoot inicializada. Desplegando stack principal..."
                 install_docker_tool "$tool_name" "$default_subdomain"
+            else
+                show_error "Error crítico al inicializar la base de datos de Chatwoot. Abortando."; cleanup 1; exit 1
+            fi
+        else
+            install_docker_tool "$tool_name" "$default_subdomain"
+        fi
+    done 
+
+    finalize_installation
+}
+
+finalize_installation() {
+    echo ""
+    show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
+    echo ""
+    echo "Accede a tus servicios en los siguientes URLs:"
+    
+    for i in "${!INSTALL_ORDER[@]}"; do
+        tool_name="${INSTALL_ORDER[$i]}"
+        subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
+        
+        subdomain="unknown"
+        # 1. Leer el subdominio guardado
+        if [ -f "$subdomain_file" ]; then
+            subdomain=$(cat "$subdomain_file")
+        else
+            # 2. Si no existe, usar el predeterminado
+            local tool_index=-1
+            for j in "${!AVAILABLE_TOOLS[@]}"; do
+                if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then tool_index=$j; break; fi
+            done
+            if [ $tool_index -ge 0 ]; then
+                subdomain="${DEFAULT_SUBDOMAINS[$tool_index]}"
+            fi
+        fi
+
+        TOOL_NAME_CAPITALIZED=$(echo "$tool_name" | awk '{print toupper(substr($0,1,1))tolower(substr($0,2))}')
+        
+        echo "- ${TOOL_NAME_CAPITALIZED}: https://$subdomain.$BASE_DOMAIN"
+    done
+    
+    echo ""
+    echo "Información de credenciales:"
+    echo "- Contraseña común: $COMMON_PASSWORD"
+    echo "- Clave secreta: $SECRET_KEY"
+    echo ""
+    echo "Esta información se ha guardado en: $DOCKER_DIR/.env.global"
+    
+    cleanup 0 true
+}
+
+# Ejecutar función principal
+main

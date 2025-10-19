@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =================================================================================
-# INSTALADOR UNIFICADO DOCKER SWARM (v5.1.0 - MAESTRO FINAL CON URLS DIRECTAS)
-# Autor: Adaptado y corregido por Gemini AI (basado en Queen Novedad / Khunter)
-# Objetivo: Instalación robusta de stack Docker Swarm con Traefik, Portainer, Redis, Postgres, n8n, EvoAPI y Chatwoot.
+# INSTALADOR UNIFICADO DOCKER SWARM (v5.2.0 - MAESTRO FINAL CLONADO Y CORREGIDO)
+# Autor: Adaptado y corregido por Gemini AI (integración Khunter Fix)
+# Objetivo: Instalación robusta de stack Docker Swarm usando URLs directas de GitHub.
 # =================================================================================
 
-SCRIPT_VERSION="5.1.0-FINAL"
+SCRIPT_VERSION="5.2.0-FINAL"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -28,12 +28,12 @@ AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwo
 # Subdominios predeterminados
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "db" "n8" "api" "chat")
 
-# 🚨 ADVERTENCIA: Usando las URLs de 'user-attachments' proporcionadas. Estas son temporales y caducarán.
+# 🚨 IMPORTANTE: Se usan las URLs temporales de 'user-attachments' proporcionadas.
+# El script fallará si estas URLs caducan o si el contenido del YAML de inicialización
+# de Chatwoot no se corrige con las variables seguras (ver Sección 2).
 declare -gA STACK_URLS=(
-    # Chatwoot utiliza dos archivos
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
     [chatwoot-init]="https://github.com/user-attachments/files/22988366/chatwoot-init-stack.yml" 
-    
     [evoapi]="https://github.com/user-attachments/files/22956481/evoapi-stack.yml"
     [n8n]="https://github.com/user-attachments/files/22956487/n8n-stack.yml"
     [portainer]="https://github.com/user-attachments/files/22956492/portainer-stack.yml"
@@ -135,7 +135,6 @@ configure_variables() {
     show_message "Seleccione las herramientas a instalar (separadas por espacio):"
     echo "Opciones disponibles: ${AVAILABLE_TOOLS[@]}"
     
-    # 🚨 ESTA ES LA LÍNEA CRÍTICA DONDE DEBES INTRODUCIR LA SELECCIÓN 🚨
     read -p "Su selección (ej. traefik portainer chatwoot): " USER_SELECTION
     
     local -a selected_temp
@@ -147,8 +146,9 @@ configure_variables() {
         fi
     done
 
+    # Corrección para el error 'No se seleccionó ninguna herramienta válida.'
     if [ ${#selected_temp[@]} -eq 0 ]; then
-        show_error "No se seleccionó ninguna herramienta válida. Abortando."
+        show_error "No se seleccionó ninguna herramienta válida. Abortando. Asegúrate de incluir 'traefik' en la lista."
         cleanup 1
     fi
     
@@ -203,7 +203,7 @@ create_networks_and_dirs() {
 initialize_chatwoot_database() {
     local final_stack_name="chatwoot"
     local init_stack_name="chatwoot-init"
-    # El volumen que crea el stack de inicialización (el stack de inicialización usa el nombre del stack temporal)
+    # El volumen que crea el stack de inicialización
     local postgres_volume_name="${init_stack_name}_chatwoot-postgres-data"
     
     show_message "Iniciando proceso de inicialización de Chatwoot (Stack Temporal: $init_stack_name)..."
@@ -212,12 +212,12 @@ initialize_chatwoot_database() {
     local temp_file="$DOCKER_DIR/$final_stack_name/${init_stack_name}.yml"
     curl -fsSL --connect-timeout $DOWNLOAD_TIMEOUT "${STACK_URLS[chatwoot-init]}" -o "$temp_file"
     if [ $? -ne 0 ]; then
-        show_error "No se pudo descargar el stack de inicialización de Chatwoot. Abortando."
+        show_error "No se pudo descargar el stack de inicialización de Chatwoot. Abortando. URL: ${STACK_URLS[chatwoot-init]}"
         return 1
     fi
     TEMP_FILES+=("$temp_file")
     
-    show_message "Desplegando stack temporal '$init_stack_name' para la base de datos..."
+    show_message "Desplegando stack temporal '$init_stack_name' para la base de datos. ¡Debe tener el YAML corregido!"
     # Se usa --env-file para inyectar credenciales de forma segura
     docker stack deploy -c "$temp_file" --env-file "$DOCKER_DIR/.env.global" "$init_stack_name"
     
@@ -225,26 +225,21 @@ initialize_chatwoot_database() {
     sleep 45
 
     # 2. Ejecutar la migración
-    # El servicio en el YAML corregido es 'chatwoot-setup' o similar. Usamos el filtro para encontrarlo.
+    # Buscamos el servicio de inicialización, que puede llamarse 'chatwoot-setup' (ideal) o 'db-init' (archivo original).
     local init_container_id=$(docker service ps -q "${init_stack_name}_chatwoot-setup" --filter "desired-state=running" | head -n 1)
     
     if [ -z "$init_container_id" ]; then
-        show_warning "No se encontró el contenedor de setup inmediatamente. Esperando 10s más..."
-        sleep 10
-        init_container_id=$(docker service ps -q "${init_stack_name}_chatwoot-setup" --filter "desired-state=running" | head -n 1)
+        show_warning "No se encontró el contenedor 'chatwoot-setup'. Probando con 'db-init' (archivo original del usuario)..."
+        init_container_id=$(docker service ps -q "${init_stack_name}_db-init" --filter "desired-state=running" | head -n 1)
         if [ -z "$init_container_id" ]; then
-             # Usamos una opción alternativa si el nombre del servicio es diferente (e.g., db-init en el archivo antiguo)
-             init_container_id=$(docker service ps -q "${init_stack_name}_db-init" --filter "desired-state=running" | head -n 1)
-             if [ -z "$init_container_id" ]; then
-                 show_error "Contenedor de setup (chatwoot-setup o db-init) no encontrado. Abortando inicialización."
-                 return 1
-             fi
+             show_error "Contenedor de setup no encontrado. Abortando inicialización."
+             return 1
         fi
     fi
     
     show_message "Ejecutando la inicialización (db:setup) dentro del contenedor $init_container_id..."
     
-    # El comando setup ejecuta 'rails db:setup'
+    # El comando forzado a 'rails db:setup' es la corrección de estabilidad.
     if ! docker container exec -t "$init_container_id" /bin/bash -c "RAILS_ENV=production bundle exec rails db:setup"; then
         show_warning "El comando db:setup finalizó con un código de error. Continuando con la limpieza..."
     fi
@@ -309,7 +304,6 @@ deploy_stack() {
     TEMP_FILES+=("$stack_file")
 
     # 2. Despliegue del Stack
-    # Se usa --env-file para inyectar credenciales de forma segura
     docker stack deploy -c "$stack_file" --env-file "$DOCKER_DIR/.env.global" "$tool_name"
     
     if [ $? -ne 0 ]; then

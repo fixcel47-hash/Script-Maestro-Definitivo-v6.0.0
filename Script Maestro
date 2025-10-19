@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =================================================================================
-# UNIFIED INSTALLER SCRIPT (v3.0.8 - DEBUG SIN LIMPIEZA)
-# Script corregido y modificado para NO limpiar el stack de inicialización 
-# en caso de fallo por Timeout (15 minutos), permitiendo el diagnóstico.
+# INSTALADOR DOCKER SWARM MAJORADO (v4.0 - Sin API)
+# Basado en la version installer.sh, eliminando toda dependencia de API/Token.
+# Corrige el fallo de inicialización de Chatwoot.
 # =================================================================================
 
-SCRIPT_VERSION="3.0.8-NO-CLEANUP"
+SCRIPT_VERSION="4.0.0"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -17,101 +17,30 @@ NC='\033[0m' # No Color
 # Variables de entorno
 DOCKER_DIR="/home/docker"
 SCRIPT_PATH=$(readlink -f "$0")
+SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 TEMP_FILES=()
-DOWNLOAD_TIMEOUT=30
 
-# -----------------------------------------------
-# Configuracion de URLs para descarga de Stacks
-# -----------------------------------------------
-declare -gA STACK_URLS=(
-    [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
-    [evoapi]="https://github.com/user-attachments/files/22956481/evoapi-stack.yml"
-    [n8n]="https://github.com/user-attachments/files/22956487/n8n-stack.yml"
-    [portainer]="https://github.com/user-attachments/files/22956492/portainer-stack.yml"
-    [postgres]="https://github.com/user-attachments/files/22956495/postgres-stack.yml"
-    [redis]="https://github.com/user-attachments/files/22956503/redis-stack.yml"
-    [traefik]="https://github.com/user-attachments/files/22956506/traefik-stack.yml"
+# Lista de archivos stack necesarios que DEBEN estar en la carpeta 'stacks/'
+REQUIRED_STACKS=(
+    "traefik-stack.yml" "portainer-stack.yml" "redis-stack.yml" 
+    "postgres-stack.yml" "n8n-stack.yml" "evoapi-stack.yml" "chatwoot-stack.yml"
 )
 
-
-declare -gA INSTALLED_COMPONENTS=(
-    [dependencies]=false
-    [security]=false
-    [networks]=false
-)
-
-# Lista de herramientas disponibles y subdominios predeterminados
+# Configuración de las herramientas a instalar
 AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "postgres" "n8" "evoapi" "chat")
-SELECTED_TOOLS=()
+SELECTED_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwoot")
 CUSTOM_SUBDOMAINS=()
 
+# --- Funciones de Control y Error ---
 
-# Variables globales para credenciales
-BASE_DOMAIN=""
-COMMON_PASSWORD=""
-SECRET_KEY=""
-
-
-# Funciones de utilidad para mensajes
+# Función para mostrar mensajes
 show_message() { echo -e "${BLUE}[INFO]${NC} $1"; }
 show_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 show_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 show_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
-# -----------------------------------------------
-# FUNCIONES DE EJECUCIÓN CON VISIBILIDAD (SPINNER)
-# -----------------------------------------------
-
-spinner() {
-    local pid=$1
-    local delay=0.1
-    local spinstr='|/-\'
-    
-    echo -n "Procesando "
-    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-        printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"
-    echo -e "${GREEN}[COMPLETADO]${NC}"
-}
-
-run_command() {
-    local cmd=$1
-    local msg=$2
-    
-    show_message "$msg"
-    
-    local temp_output=$(mktemp)
-    
-    (eval "$cmd" 2>&1 | tee "$temp_output") &
-    local cmd_pid=$!
-    
-    spinner $cmd_pid
-    wait $cmd_pid
-    local exit_status=$?
-    
-    local output=$(cat "$temp_output")
-    rm -f "$temp_output"
-    
-    if [ $exit_status -ne 0 ]; then
-        show_error "Comando falló. Revise el error a continuación."
-        show_error "Salida/Error del comando: $output"
-        # ¡IMPORTANTE! No llamar a cleanup aquí para mantener los logs.
-        exit $exit_status
-    fi
-    
-    return $exit_status
-}
-
-# -----------------------------------------------
-# FUNCIONES DE UTILIDAD (MODIFICADA: NO ELIMINA STACKS EN FALLO)
-# -----------------------------------------------
-
+# Función de limpieza (Autodestrucción y archivos temporales)
 cleanup() {
     local exit_code=$1
     local delete_stacks=${2:-false}
@@ -119,38 +48,31 @@ cleanup() {
     echo -e "${BLUE}[INFO]${NC} Realizando limpieza antes de salir..."
     
     if [ $exit_code -ne 0 ]; then
-        echo -e "${RED}[ERROR]${NC} Error detectado. Limpiando archivos temporales..."
-        
-        # Eliminar archivos temporales (no stacks)
+        echo -e "${RED}[ERROR]${NC} Error detectado durante la instalación. Limpiando archivos temporales..."
+        # Eliminar archivos temporales en caso de error
         if [ ${#TEMP_FILES[@]} -gt 0 ]; then
             for file in "${TEMP_FILES[@]}"; do
-                if [ -f "$file" ]; then
-                    rm -f "$file"
-                fi
+                if [ -f "$file" ]; then rm -f "$file"; fi
             done
         fi
-        
-        # *** MENSAJE DE DEBUG CLAVE ***
-        show_error "El stack de inicialización 'chatwoot-init' y sus logs **NO HAN SIDO ELIMINADOS**."
-        show_error "Diagnostique ejecutando: docker service logs chatwoot-init_db-init"
-        # ******************************
-
     fi
     
-    # Autodestrucción del script (deja los stacks fallidos para diagnóstico)
+    # Si se solicita, eliminar archivos de despliegue y autodestruirse
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
+        # Eliminar archivos de despliegue temporales
+        for tool_name in "${SELECTED_TOOLS[@]}"; do
+            local deploy_file="$DOCKER_DIR/$tool_name/$tool_name-deploy.yml"
+            if [ -f "$deploy_file" ]; then rm -f "$deploy_file"; fi
+        done
         
+        # Script de autodestrucción en segundo plano
         local self_destruct_script="/tmp/self_destruct_$$_$(date +%s).sh"
         cat > "$self_destruct_script" << EOF
 #!/bin/bash
 sleep 1
 rm -f "$SCRIPT_PATH"
-if [ -f "$SCRIPT_PATH" ]; then
-  sudo rm -f "$SCRIPT_PATH"
-fi
 rm -f "\$0"
 EOF
-
         chmod +x "$self_destruct_script"
         nohup "$self_destruct_script" >/dev/null 2>&1 &
     fi
@@ -165,43 +87,80 @@ EOF
 }
 
 # Configurar trampas para señales para limpiar antes de salir
-trap 'cleanup 1 false; exit 1' SIGHUP SIGINT SIGQUIT SIGTERM ERR
+trap 'cleanup 1 false; exit 1' SIGHUP SIGINT SIGQUIT SIGTERM
+trap 'cleanup 1 false; exit 1' ERR
 
-
+# Función para registrar un archivo temporal para limpieza posterior
 register_temp_file() {
     local file_path=$1
     TEMP_FILES+=("$file_path")
 }
 
-
-download_stack_file() {
-    local tool_name=$1
-    local local_path=$2
-    local download_url=${STACK_URLS[$tool_name]}
-
-    if [ -z "$download_url" ]; then
-        show_error "URL de descarga no encontrada para la herramienta: $tool_name"
-        cleanup 1
-        exit 1
-    fi
-    
-    show_message "Descargando stack '$tool_name' desde GitHub..."
-    
-    if ! curl -fsSL --progress-bar --max-time $DOWNLOAD_TIMEOUT -o "$local_path" "$download_url"; then
-        show_error "Error al descargar el archivo stack para $tool_name desde $download_url"
-        cleanup 1
-        exit 1
-    fi
-    
-    register_temp_file "$local_path"
-    show_success "Archivo stack para $tool_name descargado correctamente"
-    return 0
+# Función para animación de espera
+spinner() {
+    local pid=$1; local delay=0.1; local spinstr='|/-\'
+    echo -n "Procesando "
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}; printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}; sleep $delay; printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"; echo -e "${GREEN}[COMPLETADO]${NC}"
 }
 
+# Función para ejecutar comandos mostrando animación de espera
+run_command() {
+    local cmd=$1; local msg=$2
+    show_message "$msg"
+    eval "$cmd" > /dev/null 2>&1 &
+    local cmd_pid=$!
+    spinner $cmd_pid
+    wait $cmd_pid
+    local exit_status=$?
+    
+    if [ $exit_status -ne 0 ]; then
+        show_error "Comando falló: $cmd"
+        cleanup 1
+        exit $exit_status
+    fi
+    return $exit_status
+}
+
+# Función para generar clave aleatoria de 32 caracteres
 generate_random_key() {
     tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32
 }
 
+# --- Funciones de Instalación de Dependencias y Seguridad ---
+
+# Verificar e instalar dependencias
+install_dependencies() {
+    show_message "Verificando e instalando dependencias (Docker, curl, wget, git, jo)..."
+    
+    # Instalar jo para construcción de json (usado en la función de Chatwoot)
+    run_command "apt-get update && apt-get install -y jo" "Actualizando repositorios e instalando 'jo'..."
+
+    # Instalar Docker si no está presente
+    if ! command -v docker &> /dev/null; then
+        show_message "Instalando Docker..."
+        run_command "apt-get install -y ca-certificates curl && \
+                     install -m 0755 -d /etc/apt/keyrings && \
+                     curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc && \
+                     chmod a+r /etc/apt/keyrings/docker.asc && \
+                     echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+                     \$(. /etc/os-release && echo \"\$VERSION_CODENAME\") stable\" | \
+                     tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+                     apt-get update && \
+                     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin && \
+                     systemctl enable docker && systemctl start docker" "Instalando y habilitando Docker..."
+        configure_docker_logs
+    fi
+    
+    run_command "apt-get install -y git curl wget" "Instalando herramientas base (git, curl, wget)..."
+    
+    show_success "Dependencias instaladas"
+}
+
+# Configurar tamaño de los logs de Docker para evitar llenar el disco
 configure_docker_logs() {
     local config_file="/etc/docker/daemon.json"
     show_message "Configurando límites de logs en Docker..."
@@ -214,495 +173,362 @@ configure_docker_logs() {
   }
 }
 EOF
-    run_command "systemctl restart docker" "Reiniciando Docker para aplicar configuración..."
+    run_command "systemctl restart docker" "Reiniciando Docker para aplicar configuración de logs..."
 }
 
-configure_rkhunter() {
-    local config_file="/etc/rkhunter.conf"
-    show_message "Configurando RKHunter..."
-    run_command "sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && \
-                  sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && \
-                  sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" \
-                "Aplicando configuración de RKHunter..."
-}
-
-install_dependencies() {
-    show_message "Verificando e instalando dependencias (Docker, curl, git)..."
-    run_command "apt-get update" "Actualizando lista de paquetes del sistema..."
-
-    if ! command -v docker &> /dev/null; then
-        show_message "Docker no encontrado. Instalando..."
-        run_command "apt-get install -y ca-certificates curl" "Instalando certificados y curl..."
-        run_command "install -m 0755 -d /etc/apt/keyrings && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc && chmod a+r /etc/apt/keyrings/docker.asc" "Añadiendo clave GPG de Docker..."
-        
-        echo \
-"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-$(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        
-        run_command "apt-get update" "Actualizando paquetes post-repositorio Docker..."
-        run_command "apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" "Instalando componentes principales de Docker..."
-        run_command "systemctl enable docker && systemctl start docker" "Habilitando y arrancando servicio Docker..."
-        configure_docker_logs
-        show_success "Docker y dependencias instaladas."
-    else
-        show_success "Docker ya está instalado. Omitiendo la instalación de dependencias."
-    fi
+# Instalar herramientas de seguridad
+install_server_tools() {
+    show_message "Instalando herramientas de seguridad en el servidor (UFW, Fail2Ban, RKHunter, CHKRootkit)..."
     
-    run_command "apt-get install -y git curl wget" "Instalando utilidades del sistema (git, wget)..."
+    # Instalación
+    run_command "apt-get install -y fail2ban rkhunter chkrootkit" "Instalando paquetes de seguridad..."
+    
+    # Fail2Ban
+    run_command "systemctl enable fail2ban && systemctl start fail2ban" "Configurando Fail2Ban..."
+    
+    # RKHunter
+    run_command "rkhunter --update && rkhunter --propupd" "Actualizando y configurando RKHunter..."
+
+    # UFW Firewall
+    show_message "Configurando UFW Firewall..."
+    ufw allow ssh; ufw allow http; ufw allow https
+    echo "y" | ufw enable >/dev/null 2>&1
+    
+    show_success "Herramientas de seguridad instaladas y configuradas"
 }
 
+# Inicializar Docker Swarm si no está activo
 initialize_docker_swarm() {
     show_message "Verificando estado de Docker Swarm..."
     
     if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
         run_command "docker swarm init --advertise-addr \$(hostname -I | awk '{print \$1}')" "Inicializando Docker Swarm..."
-        if [ $? -eq 0 ]; then
-            show_success "Docker Swarm inicializado correctamente"
-        else
-            show_error "Error al inicializar Docker Swarm"
-            exit 1
-        fi
     else
         show_message "Docker Swarm ya está activo"
     fi
-
-    INSTALLED_COMPONENTS["dependencies"]=true
 }
 
-install_server_tools() {
-    show_message "Instalando herramientas de seguridad: UFW, Fail2Ban, RKHunter, CHKRootkit..."
-    
-    show_message "Instalando Fail2Ban..."
-    run_command "apt-get install -y fail2ban && systemctl enable fail2ban && systemctl start fail2ban" "Configurando Fail2Ban..."
-    
-    show_message "Instalando RKHunter..."
-    echo "postfix postfix/main_mailer_type select No configuration" | debconf-set-selections
-    run_command "apt-get install -y rkhunter" "Descargando RKHunter..."
-    configure_rkhunter
-    run_command "rkhunter --update" "Actualizando base de datos de RKHunter..."
-    run_command "rkhunter --propupd" "Actualizando propiedades de RKHunter..."
-    
-    show_message "Instalando CHKRootkit..."
-    run_command "apt-get install -y chkrootkit" "Descargando CHKRootkit..."
-
-    show_message "Configurando UFW Firewall (Permite 22, 80, 443)..."
-    run_command "apt-get install -y ufw" "Instalando UFW..."
-    run_command "ufw allow ssh && ufw allow http && ufw allow https && echo 'y' | ufw enable" "Activando UFW y reglas básicas..."
-    
-    show_success "Herramientas de seguridad instaladas correctamente"
-    INSTALLED_COMPONENTS["security"]=true
-}
-
+# Crear redes de Docker para Swarm
 create_docker_networks() {
     show_message "Creando redes Docker para Swarm..."
     
+    # Red Frontend (Para Traefik y servicios públicos)
     if ! docker network ls 2>/dev/null | grep -q "frontend"; then
         run_command "docker network create --driver overlay --attachable frontend" "Creando red frontend..."
-        show_success "Red 'frontend' creada"
     else
         show_warning "La red 'frontend' ya existe"
     fi
     
+    # Red Backend (Para bases de datos y servicios internos)
     if ! docker network ls 2>/dev/null | grep -q "backend"; then
         run_command "docker network create --driver overlay --attachable backend" "Creando red backend..."
-        show_success "Red 'backend' creada"
     else
         show_warning "La red 'backend' ya existe"
     fi
-    INSTALLED_COMPONENTS["networks"]=true
 }
 
+# Función para crear directorios para volúmenes
 create_volume_directories() {
     local stack_file=$1
     local tool_name=$2
-    
+
     show_message "Creando directorios para volúmenes de $tool_name..."
-   
     local volume_paths=$(grep -oP "device: \K/[^\s]+" "$stack_file" | sort | uniq)
 
-    if [ -z "$volume_paths" ]; then
-        show_message "No se encontraron rutas de volúmenes para $tool_name"
-        return
-    fi
+    if [ -z "$volume_paths" ]; then return; fi
 
     for path in $volume_paths; do
         run_command "mkdir -p \"$path\"" "Creando directorio $path..."
-        if [ $? -ne 0 ]; then
-             show_error "Error al crear el directorio $path"
-             exit 1
-        fi
     done
 }
 
-# Función para inicializar la base de datos de Chatwoot (Mantiene el stack si falla el timeout)
+# Función LOCAL para obtener el stack file (sustituye a download_from_api)
+get_stack_content() {
+    local tool_name=$1
+    local local_path=$2
+    local stack_filename="$tool_name-stack.yml"
+    local source_path="$SCRIPT_DIR/stacks/$stack_filename"
+
+    show_message "Buscando $stack_filename en la carpeta 'stacks/'..."
+
+    if [ ! -f "$source_path" ]; then
+        show_error "Archivo no encontrado: $source_path. Asegúrate de tener la carpeta 'stacks/' con todos los YAMLs."
+        cleanup 1
+        exit 1
+    fi
+    
+    # Copiar el archivo local
+    run_command "cp \"$source_path\" \"$local_path\"" "Copiando archivo local..."
+    register_temp_file "$local_path"
+}
+
+# --- Inicialización de Chatwoot (Corrección Avanzada) ---
+
+# Función para inicializar la base de datos de Chatwoot
 initialize_chatwoot_database() {
-    local tool_name="chatwoot"
-    local subdomain=$1
+    show_message "Inicializando base de datos de Chatwoot (Proceso avanzado)..."
     
-    show_message "Inicializando base de datos de Chatwoot..."
+    # 1. Verificar Redis (Requisito)
+    local container_id=$(docker ps -q --filter "name=redis_redis-server")
+    if [ -z "$container_id" ]; then
+        show_error "Redis no está desplegado. Chatwoot requiere que el stack 'redis' esté activo."
+        return 1
+    fi
+
+    show_message "Esperando disponibilidad de Redis..."
+    local redis_ready=false
+    local attempt=0; local max_attempts=60
+    while [ $attempt -lt $max_attempts ] && [ "$redis_ready" = false ]; do
+        if docker exec "$container_id" redis-cli ping 2>/dev/null | grep -q "PONG"; then
+            redis_ready=true; show_success "Redis está listo"
+        else
+            sleep 5; attempt=$((attempt + 1))
+        fi
+    done
+    if [ "$redis_ready" = false ]; then
+        show_error "Redis no está disponible después de 5 minutos."; return 1
+    fi
     
-    local init_stack_file="$DOCKER_DIR/$tool_name/$tool_name-init-stack.yml"
-    cat > "$init_stack_file" <<EOF
-version: '3.7'
+    # 2. Crear stack temporal solo para inicializar la DB
+    local init_stack_file="/tmp/chatwoot-init-stack.yml"
+    cat > "$init_stack_file" << EOF
+version: '3.8'
+
 services:
-  db-init:
-    image: chatwoot/chatwoot:latest
-    command: bundle exec rails db:chatwoot_setup
+  chatwoot-postgres:
+    image: pgvector/pgvector:pg16
     environment:
-      - RAILS_ENV=production
-      - POSTGRES_HOST=postgres_postgres-server
+      - POSTGRES_DB=chatwoot
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=$COMMON_PASSWORD
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+    volumes:
+      - chatwoot_postgres:/home/docker/chatwoot/postgres_data
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+    networks: [backend]
+
+  chatwoot-init:
+    image: chatwoot/chatwoot:latest
+    command: ["bundle", "exec", "rails", "db:chatwoot_prepare"]
+    environment:
+      - POSTGRES_HOST=chatwoot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=chatwoot
       - POSTGRES_USERNAME=postgres
       - POSTGRES_PASSWORD=$COMMON_PASSWORD
-      - POSTGRES_DATABASE=chatwoot_db
+      - REDIS_URL=redis://redis-server:6379/4
       - SECRET_KEY_BASE=$SECRET_KEY
-      - REDIS_URL=redis://redis_redis-server:6379/1
-    networks:
-      - backend
+      - RAILS_ENV=production
+      - NODE_ENV=production
+    networks: [backend]
+    depends_on: [chatwoot-postgres]
     deploy:
-      mode: replicated
-      replicas: 1
-      restart_policy:
-        condition: "none"
+      restart_policy: {condition: none}
+      placement: {constraints: [node.role == manager]}
+
 networks:
-  backend:
-    external: true
+  backend: {external: true}
+
+volumes:
+  chatwoot_postgres: {external: true}
 EOF
+    
     register_temp_file "$init_stack_file"
+    
+    # 3. Asegurar el volumen para la inicialización (requerido por el stack de init)
+    docker volume create --driver local --opt type=none --opt device=/home/docker/chatwoot/postgres_data --opt o=bind chatwoot_postgres >/dev/null 2>&1
+    
+    # 4. Desplegar el stack de inicialización
+    run_command "docker stack deploy -c \"$init_stack_file\" chatwoot-init" "Desplegando stack de inicialización temporal..."
 
-    run_command "docker stack deploy -c $init_stack_file ${tool_name}-init" "Desplegando stack de inicialización de base de datos..."
-
-    show_message "Esperando a que la inicialización de la base de datos termine (¡Máximo 15 minutos!)..."
-    local init_service_id="${tool_name}-init_db-init"
-    local init_task_status=""
-    local max_wait=900 # 15 minutos
-
-    for i in $(seq 1 $max_wait); do
-        init_task_status=$(docker service ps -f "desired-state=shutdown" -f "name=${init_service_id}" --format "{{.CurrentState}}" ${tool_name}-init 2>/dev/null | head -n 1)
-        
-        if [ $((i % 30)) -eq 0 ]; then
-             show_message "Estado actual del servicio de inicialización: ${YELLOW}$init_task_status${NC} (Tiempo transcurrido: $i segundos)"
-        fi
-        
-        if [[ "$init_task_status" == *"Shutdown"* ]]; then
-            show_success "Inicialización de base de datos completada exitosamente"
-            run_command "docker stack rm ${tool_name}-init" "Limpiando stack de inicialización..."
-            show_success "Base de datos de Chatwoot inicializada correctamente"
-            return 0
-        fi
-        
-        if [ $i -eq $max_wait ]; then
-            show_error "Timeout: El servicio de inicialización de Chatwoot no finalizó después de 15 minutos."
-            show_error "**¡IMPORTANTE!** El stack **${tool_name}-init** NO FUE ELIMINADO."
-            show_error "**Diagnostique ejecutando:** docker service logs ${tool_name}-init_db-init"
-            
-            # NO ELIMINAMOS EL STACK, SOLO SALIMOS DEL SCRIPT
-            exit 1 
-        fi
-        sleep 1
+    # 5. Esperar la disponibilidad de PostgreSQL
+    show_message "Esperando a que PostgreSQL inicie..."
+    local postgres_container_id=""
+    local pg_ready=false; local pg_attempt=0; local max_pg_wait=60
+    while [ $pg_attempt -lt $max_pg_wait ] && [ -z "$postgres_container_id" ]; do
+        postgres_container_id=$(docker ps -q --filter "name=chatwoot-init_chatwoot-postgres")
+        if [ -z "$postgres_container_id" ]; then sleep 5; pg_attempt=$((pg_attempt + 1)); fi
     done
+    
+    if [ -z "$postgres_container_id" ]; then show_error "No se pudo iniciar PostgreSQL."; docker stack rm chatwoot-init >/dev/null 2>&1; return 1; fi
+
+    show_message "Verificando conexión a PostgreSQL..."
+    while [ $pg_attempt -lt $max_pg_wait ] && [ "$pg_ready" = false ]; do
+        if docker exec "$postgres_container_id" pg_isready -U postgres -h localhost >/dev/null 2>&1; then
+            pg_ready=true; show_success "PostgreSQL está listo."
+            sleep 10 # Espera adicional de estabilidad
+        else
+            sleep 5; pg_attempt=$((pg_attempt + 1))
+        fi
+    done
+    if [ "$pg_ready" = false ]; then show_error "PostgreSQL no disponible."; docker stack rm chatwoot-init >/dev/null 2>&1; return 1; fi
+        
+    # 6. Esperar a que termine la inicialización
+    show_message "Esperando a que el contenedor de inicialización complete 'db:chatwoot_prepare'..."
+    local init_complete=false; local max_wait=600; local wait_time=0
+    while [ $wait_time -lt $max_wait ] && [ "$init_complete" = false ]; do
+        local service_status=$(docker service ps chatwoot-init_chatwoot-init --format "{{.CurrentState}}" --no-trunc 2>/dev/null | head -1)
+        if echo "$service_status" | grep -q "Complete"; then init_complete=true; show_success "Inicialización completada."; break
+        elif echo "$service_status" | grep -q "Failed"; then show_error "La inicialización de la base de datos falló."; break
+        fi
+        sleep 10; wait_time=$((wait_time + 10))
+    done
+    
+    # 7. Limpiar el stack de inicialización
+    show_message "Limpiando stack temporal de inicialización..."
+    docker stack rm chatwoot-init >/dev/null 2>&1
+    sleep 15
+    docker volume rm chatwoot_postgres >/dev/null 2>&1 # El stack final creará su propio volumen
+    
+    if [ "$init_complete" = true ]; then return 0
+    else return 1
+    fi
 }
 
 
-install_tool() {
+# Función para instalar una herramienta con Docker Swarm
+install_docker_tool() {
     local tool_name=$1
-    local subdomain=$2
-    local stack_dir="$DOCKER_DIR/$tool_name"
-    local stack_file="$stack_dir/$tool_name-stack.yml"
+    local default_subdomain=$2
     
-    show_message "Preparando instalación de $tool_name con subdominio: $subdomain.$BASE_DOMAIN"
-
-    if docker stack ls 2>/dev/null | grep -q "$tool_name"; then
-        show_warning "El stack '$tool_name' ya está desplegado. Omitiendo la descarga e instalación."
-        echo "$subdomain" > "$DOCKER_DIR/$tool_name/.subdomain"
-        return 0
-    fi
+    show_message "Configurando $tool_name..."
+    local tool_dir="$DOCKER_DIR/$tool_name"
+    mkdir -p $tool_dir
+    cd $tool_dir || { show_error "No se pudo acceder al directorio $tool_dir"; cleanup 1; exit 1; }
     
-    mkdir -p "$stack_dir"
-    download_stack_file "$tool_name" "$stack_file"
-
-    create_volume_directories "$stack_file" "$tool_name"
-
-    local full_domain="$subdomain.$BASE_DOMAIN"
-
-    show_message "Aplicando sanitización de variables..."
+    # 1. Solicitar Subdominio
+    read -p "Ingrese el subdominio para $tool_name [$default_subdomain]: " SUBDOMAIN
+    SUBDOMAIN=${SUBDOMAIN:-$default_subdomain}
     
-    # Reemplazar variables de entorno clave
-    sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$stack_file"
-    sed -i "s|N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$SECRET_KEY|g" "$stack_file"
-    sed -i "s|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$COMMON_PASSWORD|g" "$stack_file"
-    sed -i "s|REDIS_PASSWORD=.*|REDIS_PASSWORD=$COMMON_PASSWORD|g" "$stack_file"
-    sed -i "s|DB_POSTGRESDB_PASSWORD=.*|DB_POSTGRESDB_PASSWORD=$COMMON_PASSWORD|g" "$stack_file"
-    sed -i "s|RAILS_INBOUND_EMAIL_PASSWORD=.*|RAILS_INBOUND_EMAIL_PASSWORD=$COMMON_PASSWORD|g" "$stack_file"
-    sed -i "s|PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$COMMON_PASSWORD|g" "$stack_file"
+    local subdomain_file="$tool_dir/.subdomain"
+    echo "$SUBDOMAIN" > "$subdomain_file"; register_temp_file "$subdomain_file"
     
-    # Reemplazar subdominio y dominio (URLs y Reglas Traefik)
-    sed -i "s/REPLACE_SUBDOMAIN.REPLACE_DOMAIN/$full_domain/g" "$stack_file"
-    sed -i "s/REPLACE_DOMAIN/$BASE_DOMAIN/g" "$stack_file"
-    sed -i "s/N8N_HOST=.*$/N8N_HOST=$full_domain/g" "$stack_file"
-    sed -i "s|N8N_EDITOR_BASE_URL=.*|N8N_EDITOR_BASE_URL=https://$full_domain|g" "$stack_file"
-    sed -i "s/HOST=.*$/HOST=$full_domain/g" "$stack_file" # EvoAPI
+    # 2. Obtener Stack File (LOCAL)
+    local stack_file="$tool_dir/$tool_name-stack.yml"
+    get_stack_content "$tool_name" "$stack_file" # Llama a la función local
 
-    # Manejo de casos especiales
-    if [ "$tool_name" == "redis" ]; then
-        show_message "Aplicando corrección de sintaxis y contraseña para Redis..."
-        sed -i "s/command: redis-server --loglevel warning/command: redis-server --requirepass $COMMON_PASSWORD --loglevel warning/g" "$stack_file"
-        
-        sed -i '/image: redislabs\/redisinsight:latest/a\    environment:\n      - REDISINSIGHT_PASSWORD=\$COMMON_PASSWORD\n      - REDIS_PASSWORD=\$COMMON_PASSWORD' "$stack_file"
-        show_success "Corrección de Redis aplicada."
-    fi
+    # 3. Reemplazar variables
+    local deploy_file="$tool_dir/$tool_name-deploy.yml"
+    cp "$stack_file" "$deploy_file"
+    register_temp_file "$deploy_file"
 
-    if [ "$tool_name" == "n8n" ]; then
-        show_message "Ajustando subdominios de webhook para n8n..."
-        sed -i "s/WEBHOOK_URL=https:\/\/webhook\..*$/WEBHOOK_URL=https:\/\/webhook.$full_domain/g" "$stack_file"
-        sed -i "s/REPLACE_WEBHOOK_SUBDOMAIN/webhook.$subdomain/g" "$stack_file"
-        show_success "Ajuste de n8n aplicado."
-    fi
-    show_success "Sanitización de $tool_name completada."
+    sed -i "s|REPLACE_PASSWORD|$COMMON_PASSWORD|g" "$deploy_file"
+    sed -i "s|REPLACE_SUBDOMAIN|$SUBDOMAIN|g" "$deploy_file"
+    sed -i "s|REPLACE_DOMAIN|$BASE_DOMAIN|g" "$deploy_file"
+    sed -i "s|REPLACE_SECRET_KEY|$SECRET_KEY|g" "$deploy_file"
 
-    run_command "docker stack deploy -c $stack_file $tool_name" "Desplegando $tool_name en Docker Swarm..."
+    # 4. Crear directorios de volúmenes
+    create_volume_directories "$deploy_file" "$tool_name"
     
-    if [ $? -eq 0 ]; then
-        show_success "$tool_name instalado correctamente en Docker Swarm"
-        echo "$subdomain" > "$DOCKER_DIR/$tool_name/.subdomain"
-        return 0
-    else
-        show_error "Fallo al desplegar $tool_name"
-        exit 1
-    fi
-}
-
-
-get_credentials() {
-    show_message "--- CREDENCIALES GLOBALES ---"
-    
-    if [ -f "$DOCKER_DIR/.env.global" ]; then
-        show_message "Credenciales globales encontradas. Usando configuración anterior."
-        source "$DOCKER_DIR/.env.global"
-        
-        local temp_password=""
-        while [ -z "$temp_password" ]; do
-             read -rsp "Confirme la contraseña común para continuar (debe ser la misma que usó antes): " temp_password
-             echo
-        done
-        
-        if [ "$temp_password" != "$COMMON_PASSWORD" ]; then
-            show_error "Contraseña no coincide con la guardada. Reiniciando la entrada de credenciales."
-            COMMON_PASSWORD=""
-            BASE_DOMAIN=""
-            SECRET_KEY=""
-            get_credentials
-            return
-        fi
-
-        show_success "Dominio: $BASE_DOMAIN | Contraseña: *** | Clave Secreta: ***"
-        
-    else
-        show_message "No se encontraron credenciales. Ingrese los datos de instalación."
-        while [ -z "$COMMON_PASSWORD" ]; do
-            read -rsp "Ingrese la contraseña común para todas las herramientas: " COMMON_PASSWORD
-            echo
-            if [ -z "$COMMON_PASSWORD" ]; then
-                show_error "La contraseña no puede estar vacía."
-            fi
-        done
-
-        while [ -z "$BASE_DOMAIN" ]; do
-            read -rp "Ingrese el dominio base (ejemplo: midominio.com): " BASE_DOMAIN
-            if [ -z "$BASE_DOMAIN" ]; then
-                show_error "El dominio no puede estar vacío."
-            fi
-            BASE_DOMAIN=$(echo "$BASE_DOMAIN" | sed 's|^https\?://||')
-        done
-
-        read -rp "Ingrese una clave secreta de 32 caracteres (o presione Enter para generar una): " SECRET_KEY
-        if [ -z "$SECRET_KEY" ]; then
-            SECRET_KEY=$(generate_random_key)
-            show_message "Se utilizará la siguiente clave secreta generada: $SECRET_KEY"
-        fi
-        
-        show_message "Guardando credenciales en $DOCKER_DIR/.env.global..."
-        mkdir -p "$DOCKER_DIR"
-        echo "BASE_DOMAIN=$BASE_DOMAIN" > "$DOCKER_DIR/.env.global"
-        echo "COMMON_PASSWORD=$COMMON_PASSWORD" >> "$DOCKER_DIR/.env.global"
-        echo "SECRET_KEY=$SECRET_KEY" >> "$DOCKER_DIR/.env.global"
-    fi
-}
-
-select_tools_and_subdomains() {
-    show_message "--- CONFIGURACIÓN DE HERRAMIENTAS Y SUBDOMINIOS ---"
-    
-    if [ -f "$DOCKER_DIR/.selection.cfg" ]; then
-        show_message "Configuración de herramientas anterior encontrada. Usando la misma selección."
-        local saved_data=$(cat "$DOCKER_DIR/.selection.cfg")
-        
-        IFS=$'\n' read -r -d '' -a lines <<< "$saved_data"
-        for line in "${lines[@]}"; do
-            tool=$(echo "$line" | awk -F'=' '{print $1}')
-            subdomain=$(echo "$line" | awk -F'=' '{print $2}')
-            SELECTED_TOOLS+=("$tool")
-            CUSTOM_SUBDOMAINS+=("$subdomain")
-        done
-
-        show_success "Se reanuda la instalación con ${#SELECTED_TOOLS[@]} herramientas y subdominios cargados."
-        return
-    fi
-    
-    SELECTED_TOOLS=()
-    CUSTOM_SUBDOMAINS=()
-
-    show_message "Seleccione las herramientas a instalar (deje vacío para instalar TODAS, o ingrese los números separados por espacio, ej: 1 3 5):"
-    
-    local tool_options=""
-    for i in "${!AVAILABLE_TOOLS[@]}"; do
-        tool_options+="$((i+1))) ${AVAILABLE_TOOLS[$i]^} (Predeterminado: ${DEFAULT_SUBDOMAINS[$i]}.$BASE_DOMAIN)\n"
-    done
-    
-    echo -e "$tool_options"
-    read -rp "Selección [1-7 o dejar vacío para TODO]: " selection
-
-    if [ -z "$selection" ]; then
-        SELECTED_TOOLS=("${AVAILABLE_TOOLS[@]}")
-        
-        show_message "Se instalarán TODAS las herramientas. Configure los subdominios a continuación."
-        
-        for i in "${!SELECTED_TOOLS[@]}"; do
-            local tool_name="${SELECTED_TOOLS[$i]}"
-            local default_subdomain="${DEFAULT_SUBDOMAINS[$i]}"
-            
-            local custom_sub=""
-            read -rp "   -> Subdominio para ${tool_name^} (Enter para usar '$default_subdomain'): " custom_sub
-            
-            if [ -z "$custom_sub" ]; then
-                CUSTOM_SUBDOMAINS+=("$default_subdomain")
-            else
-                CUSTOM_SUBDOMAINS+=("$custom_sub")
-            fi
-        done
-    else
-        local selected_indices=($(echo "$selection" | tr ' ' '\n' | sort -n | uniq))
-        
-        for index in "${selected_indices[@]}"; do
-            local array_index=$((index-1))
-            if [ "$array_index" -ge 0 ] && [ "$array_index" -lt "${#AVAILABLE_TOOLS[@]}" ]; then
-                local tool_name="${AVAILABLE_TOOLS[$array_index]}"
-                local default_subdomain="${DEFAULT_SUBDOMAINS[$array_index]}"
-                
-                SELECTED_TOOLS+=("$tool_name")
-                
-                local custom_sub=""
-                read -rp "   -> Subdominio para ${tool_name^} (Enter para usar '$default_subdomain'): " custom_sub
-                
-                if [ -z "$custom_sub" ]; then
-                    CUSTOM_SUBDOMAINS+=("$default_subdomain")
-                else
-                    CUSTOM_SUBDOMAINS+=("$custom_sub")
-                fi
-            else
-                show_warning "Opción inválida: $index será ignorada."
-            fi
-        done
-        
-        if [ ${#SELECTED_TOOLS[@]} -eq 0 ]; then
-            show_error "No se seleccionó ninguna herramienta válida. Saliendo."
-            exit 1
+    # 5. Tratamiento especial para Chatwoot (Inicialización DB)
+    if [ "$tool_name" = "chatwoot" ]; then
+        if initialize_chatwoot_database; then
+            show_success "Base de datos de Chatwoot inicializada para el despliegue final."
+        else
+            show_error "Error crítico al inicializar la base de datos de Chatwoot."
+            cleanup 1; exit 1
         fi
     fi
-
-    mkdir -p "$DOCKER_DIR"
-    local selection_file="$DOCKER_DIR/.selection.cfg"
-    rm -f "$selection_file"
-    for i in "${!SELECTED_TOOLS[@]}"; do
-        echo "${SELECTED_TOOLS[$i]}=${CUSTOM_SUBDOMAINS[$i]}" >> "$selection_file"
-    done
-
-    echo 
-    show_message "¡Listo! Se instalarán las siguientes herramientas en su dominio: ${BASE_DOMAIN}"
-    for i in "${!SELECTED_TOOLS[@]}"; do
-        echo -e "   - ${SELECTED_TOOLS[$i]^}: https://${CUSTOM_SUBDOMAINS[$i]}.$BASE_DOMAIN"
-    done
-    echo 
+    
+    # 6. Desplegar stack
+    run_command "docker stack deploy -c \"$deploy_file\" $tool_name" "Desplegando $tool_name..."
+    
+    cd $DOCKER_DIR || { show_error "No se pudo volver al directorio principal $DOCKER_DIR"; cleanup 1; exit 1; }
 }
 
+# --- Flujo Principal ---
 
-main_installation_flow() {
-    if [ "$EUID" -ne 0 ]; then
-        show_error "Por favor, ejecuta este script como root o con sudo."
-        exit 1
-    fi
-    
-    get_credentials
-    select_tools_and_subdomains 
-    
-    show_message "Iniciando la instalación automatizada de herramientas Docker..."
-    
+main() {
+    echo -e "\n${GREEN}===========================================${NC}"
+    echo -e "${GREEN}  🚀 INICIANDO INSTALADOR DOCKER MAJORADO 🚀  ${NC}"
+    echo -e "${GREEN}===========================================${NC}\n"
+
+    # 1. Chequeo y Setup
+    if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
+    mkdir -p $DOCKER_DIR; cd $DOCKER_DIR || { show_error "No se pudo acceder a $DOCKER_DIR"; cleanup 1; exit 1; }
+
+    # 2. Verificar archivos de stacks locales
+    for stack in "${REQUIRED_STACKS[@]}"; do
+        if [ ! -f "$SCRIPT_DIR/stacks/$stack" ]; then
+            show_error "Falta un archivo crucial: 'stacks/$stack'. Por favor, crea la carpeta 'stacks/' junto al script y añade todos los archivos YAML necesarios."
+            cleanup 1; exit 1
+        fi
+    done
+    show_success "Archivos de configuración de stacks encontrados localmente."
+
+    # 3. Solicitar y Guardar Credenciales
+    show_message "Configuración inicial"
+    read -p "Ingrese la contraseña común para todas las herramientas: " COMMON_PASSWORD
+    if [ -z "$COMMON_PASSWORD" ]; then show_error "La contraseña no puede estar vacía"; cleanup 1; exit 1; fi
+
+    read -p "Ingrese el dominio base (ejemplo: midominio.com): " BASE_DOMAIN
+    if [ -z "$BASE_DOMAIN" ]; then show_error "El dominio no puede estar vacío"; cleanup 1; exit 1; fi
+
+    DEFAULT_SECRET_KEY=$(generate_random_key)
+    read -p "Ingrese una clave secreta de 32 caracteres (o Enter para usar la generada): " SECRET_KEY
+    SECRET_KEY=${SECRET_KEY:-$DEFAULT_SECRET_KEY}
+    if [ ${#SECRET_KEY} -ne 32 ]; then show_warning "Clave proporcionada no tiene 32 caracteres. Usando la generada."; SECRET_KEY=$DEFAULT_SECRET_KEY; fi
+    show_message "Clave secreta utilizada: $SECRET_KEY"
+
+    env_global_file="$DOCKER_DIR/.env.global"
+    cat > $env_global_file << EOL
+COMMON_PASSWORD=$COMMON_PASSWORD
+BASE_DOMAIN=$BASE_DOMAIN
+SECRET_KEY=$SECRET_KEY
+EOL
+
+    # 4. Instalación de Infraestructura y Herramientas
     install_dependencies
     initialize_docker_swarm
+    install_server_tools
     create_docker_networks
-    install_server_tools 
     
-    for i in "${!SELECTED_TOOLS[@]}"; do
-        tool_name="${SELECTED_TOOLS[$i]}"
-        subdomain="${CUSTOM_SUBDOMAINS[$i]}" 
+    # 5. Despliegue de Stacks en orden de dependencia
+    show_message "Instalando servicios en orden de dependencias..."
+    INSTALL_ORDER=("traefik" "redis" "postgres" "portainer" "n8n" "evoapi" "chatwoot")
+    
+    for tool_name in "${INSTALL_ORDER[@]}"; do
+        # Encontrar el subdominio predeterminado
+        default_subdomain=""
+        for j in "${!AVAILABLE_TOOLS[@]}"; do
+            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
+                default_subdomain="${DEFAULT_SUBDOMAINS[$j]}"
+                break
+            fi
+        done
         
-        install_tool "$tool_name" "$subdomain"
+        install_docker_tool "$tool_name" "$default_subdomain"
         
+        # Pausa para estabilización
         if [ "$tool_name" = "postgres" ] || [ "$tool_name" = "redis" ]; then
-            show_message "Esperando a que $tool_name se estabilice (15 segundos)..."
+            show_message "Esperando a que $tool_name se estabilice..."
             sleep 15
-        fi
-        
-        if [ "$tool_name" == "chatwoot" ]; then
-             show_message "Esperando 30 segundos para que el stack principal de Chatwoot se estabilice antes de la inicialización..."
-             sleep 30 
-             initialize_chatwoot_database "$subdomain" 
-             if [ $? -ne 0 ]; then
-                 exit 1 # Sale si initialize_chatwoot_database devuelve un error (timeout)
-             fi
         fi
     done
 
-    finalize_installation
-}
-
-finalize_installation() {
+    # 6. Mensaje final y limpieza
     echo ""
     show_success "🎉 ¡INSTALACIÓN COMPLETADA! 🎉"
     echo ""
     echo "Accede a tus servicios en los siguientes URLs:"
     
-    for i in "${!SELECTED_TOOLS[@]}"; do
-        tool_name="${SELECTED_TOOLS[$i]}"
-
-        tool_index=-1
-        for j in "${!AVAILABLE_TOOLS[@]}"; do
-            if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then
-                tool_index=$j
-                break
-            fi # <<--- LA CORRECCIÓN DE SINTAXIS ESTÁ AQUÍ
-        done
-
-        if [ $tool_index -ge 0 ]; then
-            subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
-            if [ -f "$subdomain_file" ]; then
-                subdomain=$(cat "$subdomain_file")
-            else
-                subdomain="${CUSTOM_SUBDOMAINS[$i]}"
-            fi
-
-            echo "- ${tool_name^}: https://$subdomain.$BASE_DOMAIN"
+    for tool_name in "${SELECTED_TOOLS[@]}"; do
+        subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
+        if [ -f "$subdomain_file" ]; then
+            subdomain=$(cat "$subdomain_file")
         fi
+        TOOL_NAME_CAPITALIZED=$(echo "$tool_name" | awk '{print toupper(substr($0,1,1))tolower(substr($0,2))}')
+        echo "- ${TOOL_NAME_CAPITALIZED}: https://$subdomain.$BASE_DOMAIN"
     done
     
     echo ""
-    echo "Información de credenciales (Guardada en: $DOCKER_DIR/.env.global):"
-    echo "- Contraseña común: $COMMON_PASSWORD"
-    echo "- Clave secreta: $SECRET_KEY"
-    echo ""
+    echo "Información de credenciales guardada en: $DOCKER_DIR/.env.global"
     
-    rm -f "$DOCKER_DIR/.selection.cfg"
-
-    cleanup 0 true 
+    cleanup 0 true
 }
 
-main_installation_flow
+# Ejecutar función principal
+main

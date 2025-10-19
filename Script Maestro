@@ -29,7 +29,6 @@ AVAILABLE_TOOLS=("traefik" "portainer" "redis" "postgres" "n8n" "evoapi" "chatwo
 DEFAULT_SUBDOMAINS=("proxy" "admin" "redis" "db" "n8" "api" "chat")
 
 # 🚨 ADVERTENCIA: Usando las URLs de 'user-attachments' proporcionadas. Estas son temporales y caducarán.
-# Es crítico que el archivo 'chatwoot-init-stack.yml' contenga la corrección de seguridad de la Sección 2.
 declare -gA STACK_URLS=(
     # Chatwoot utiliza dos archivos
     [chatwoot]="https://github.com/user-attachments/files/22956465/chatwoot-stack.yml"
@@ -136,6 +135,7 @@ configure_variables() {
     show_message "Seleccione las herramientas a instalar (separadas por espacio):"
     echo "Opciones disponibles: ${AVAILABLE_TOOLS[@]}"
     
+    # 🚨 ESTA ES LA LÍNEA CRÍTICA DONDE DEBES INTRODUCIR LA SELECCIÓN 🚨
     read -p "Su selección (ej. traefik portainer chatwoot): " USER_SELECTION
     
     local -a selected_temp
@@ -210,7 +210,6 @@ initialize_chatwoot_database() {
     
     # 1. Descargar y desplegar el stack TEMPORAL de inicialización
     local temp_file="$DOCKER_DIR/$final_stack_name/${init_stack_name}.yml"
-    # Nota: Usamos la clave STACK_URLS[chatwoot-init] que apunta al archivo 'chatwoot-init-stack.yml'
     curl -fsSL --connect-timeout $DOWNLOAD_TIMEOUT "${STACK_URLS[chatwoot-init]}" -o "$temp_file"
     if [ $? -ne 0 ]; then
         show_error "No se pudo descargar el stack de inicialización de Chatwoot. Abortando."
@@ -226,7 +225,7 @@ initialize_chatwoot_database() {
     sleep 45
 
     # 2. Ejecutar la migración
-    # El servicio en el YAML corregido es 'chatwoot-setup'
+    # El servicio en el YAML corregido es 'chatwoot-setup' o similar. Usamos el filtro para encontrarlo.
     local init_container_id=$(docker service ps -q "${init_stack_name}_chatwoot-setup" --filter "desired-state=running" | head -n 1)
     
     if [ -z "$init_container_id" ]; then
@@ -234,8 +233,12 @@ initialize_chatwoot_database() {
         sleep 10
         init_container_id=$(docker service ps -q "${init_stack_name}_chatwoot-setup" --filter "desired-state=running" | head -n 1)
         if [ -z "$init_container_id" ]; then
-             show_error "Contenedor de setup no encontrado. Abortando inicialización."
-             return 1
+             # Usamos una opción alternativa si el nombre del servicio es diferente (e.g., db-init en el archivo antiguo)
+             init_container_id=$(docker service ps -q "${init_stack_name}_db-init" --filter "desired-state=running" | head -n 1)
+             if [ -z "$init_container_id" ]; then
+                 show_error "Contenedor de setup (chatwoot-setup o db-init) no encontrado. Abortando inicialización."
+                 return 1
+             fi
         fi
     fi
     

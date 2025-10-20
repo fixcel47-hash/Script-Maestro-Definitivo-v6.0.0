@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR DOCKER SWARM STANDALONE (V5.3 - SEGURIDAD Y MAXIMA CLARIDAD)
-# Incluye Fail2Ban, RKHunter, CHKRootkit, UFW y límites de logs de Docker.
+# INSTALADOR DOCKER SWARM STANDALONE (V5.4 - FIX DE LOGGING Y SEGURIDAD)
+# Fix: Asegura que la función run_command capture y reporte el estado de salida (exit code) correctamente.
 # =================================================================================
 
-SCRIPT_VERSION="5.3.0-STANDALONE-SECURITY-MAX-CLARITY"
+SCRIPT_VERSION="5.4.0-STANDALONE-LOGGING-FIX"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -111,7 +111,7 @@ EOF_SD
 trap 'cleanup 1 false' SIGHUP SIGINT SIGQUIT SIGTERM
 trap 'cleanup 1 false' ERR
 
-# FUNCIÓN run_command (Verbose): Ejecuta comandos mostrando TODO el output
+# FUNCIÓN run_command (Mejorada V5.4): Ejecuta comandos mostrando TODO el output y captura el estado de salida correctamente
 run_command() {
     local cmd=$1
     local msg=$2
@@ -120,16 +120,24 @@ run_command() {
     echo -e "${YELLOW}Ejecutando: ${cmd}${NC}"
     echo "--------------------------- INICIO OUTPUT ---------------------------"
 
-    if ! eval "$cmd"; then
-        local exit_status=$?
+    # Ejecutar el comando
+    eval "$cmd" 
+    local exit_status=$? # Capturar el estado de salida inmediatamente
+
+    if [ $exit_status -ne 0 ]; then
         echo "--------------------------- FIN OUTPUT ----------------------------"
         show_error "Comando falló con estado $exit_status."
         show_error "Comando: ${cmd}"
+        
+        if [ "$cmd" = "rkhunter --update" ]; then
+            show_error "La actualización de RKHunter falló. Esto puede ser un error de conectividad (mirrors) y NO CRÍTICO para el resto de la instalación, pero debe ser investigado manualmente."
+        fi
+        
         cleanup 1 
     fi
     
     echo "--------------------------- FIN OUTPUT ----------------------------"
-    show_success "Comando completado exitosamente."
+    show_success "Comando completado exitosamente (Estado: $exit_status)."
     return 0
 }
 
@@ -151,10 +159,10 @@ download_stack_content() {
 
 
 # ----------------------------------------------------
-# Funciones de Seguridad (NUEVAS)
+# Funciones de Seguridad
 # ----------------------------------------------------
 
-# Función para configurar límites de logs de Docker (extraída de installer.sh)
+# Función para configurar límites de logs de Docker
 configure_docker_logs() {
     local config_file="/etc/docker/daemon.json"
     show_message "Configurando límites de logs en Docker..."
@@ -171,7 +179,7 @@ EOF
     run_command "systemctl restart docker" "Reiniciando Docker para aplicar configuración de logs..."
 }
 
-# Función para configurar RKHunter (extraída de installer.sh)
+# Función para configurar RKHunter
 configure_rkhunter() {
     local config_file="/etc/rkhunter.conf"
     show_message "Configurando RKHunter..."
@@ -183,7 +191,7 @@ configure_rkhunter() {
     run_command "$config_command" "Aplicando configuración base de RKHunter..."
 }
 
-# Función para instalar herramientas de seguridad del servidor (extraída de installer.sh)
+# Función para instalar herramientas de seguridad del servidor
 install_server_tools() {
     show_message "Instalando y configurando herramientas de seguridad en el servidor..."
     
@@ -196,7 +204,7 @@ install_server_tools() {
     show_message "Configurando RKHunter..."
     run_command "echo \"postfix postfix/main_mailer_type select No configuration\" | debconf-set-selections && apt-get install -y rkhunter" "Instalando RKHunter (con configuración silenciosa de Postfix)..."
     configure_rkhunter
-    run_command "rkhunter --update" "Actualizando bases de datos de RKHunter..."
+    run_command "rkhunter --update" "Actualizando bases de datos de RKHunter..." # Esta es la línea con el error reportado
     run_command "rkhunter --propupd" "Actualizando base de datos de propiedades de archivos..."
     
     # CHKRootkit
@@ -217,14 +225,12 @@ install_server_tools() {
 
 
 # ----------------------------------------------------
-# Funciones de Infraestructura y Despliegue (Robustez V4.9)
+# Funciones de Infraestructura y Despliegue
 # ----------------------------------------------------
 
-# MODIFICADA para instalar 'jo' y llamar a configure_docker_logs
 install_dependencies() { 
     show_message "Verificando e instalando dependencias..."
     run_command "apt-get update" "Actualizando repositorios..."
-    # Se agrega 'jo' para futura compatibilidad con reporte de componentes
     run_command "apt-get install -y ca-certificates curl git wget jo" "Instalando utilidades (git, curl, wget, jo)..."
     
     if ! command -v docker &> /dev/null; then 
@@ -234,7 +240,7 @@ install_dependencies() {
         run_command "apt-get update" "Actualizando repositorios nuevamente..."
         run_command "apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" "Instalando paquetes de Docker..."
         run_command "systemctl enable docker && systemctl start docker" "Habilitando e iniciando Docker..."
-        configure_docker_logs # Llama a la nueva función
+        configure_docker_logs
     fi
     INSTALLED_COMPONENTS["dependencies"]=true; 
 }
@@ -289,7 +295,7 @@ wait_for_service() {
 initialize_chatwoot_database() {
     show_message "Inicializando base de datos de Chatwoot (Proceso avanzado, FIX garantizado V4.9)..."
     local container_id=$(docker ps -q --filter "name=redis_redis-server")
-    if [ -z "$container_id" ]; then show_error "Redis no está desplegado."; return 1; fi
+    if [ -z "$container_id" ]; then show_error "Redis no está desplegado."; return 1; }
     
     run_command "docker volume create --driver local --opt type=none --opt device=$DOCKER_DIR/chatwoot/postgres_data --opt o=bind chatwoot_postgres" "Creando volumen temporal para la inicialización de Chatwoot DB..."
     
@@ -371,7 +377,7 @@ install_docker_tool() {
     local tool_dir="$DOCKER_DIR/$tool_name"
     mkdir -p $tool_dir; cd $tool_dir || { show_error "No se pudo acceder a $tool_dir"; cleanup 1; }
     local tool_index=-1
-    for i in "${!AVAILABLE_TOOLS[@]}"; do if [ "${AVAILABLE_TOOLS[$i]}" = "$tool_name" ]; then tool_index=$i; break; fi; done
+    for i in "${!AVAILABLE_TOOLS[@]}"; do if [ "${AVAILABLE_TOOLS[$i]}" = "$tool_name" ]; then tool_index=$i; break; fi; }
     read -p "Ingrese el subdominio para $tool_name [$default_subdomain]: " SUBDOMAIN
     SUBDOMAIN=${SUBDOMAIN:-$default_subdomain}
     CUSTOM_SUBDOMAINS[$tool_index]=$SUBDOMAIN
@@ -387,7 +393,7 @@ install_docker_tool() {
     for path in $volume_paths; do run_command "mkdir -p \"$path\"" "Creando directorio $path..."; done
     if [ "$tool_name" = "chatwoot" ]; then
         show_message "Chatwoot detectado - Ejecutando inicialización de base de datos..."
-        if ! docker service ls | grep -q "redis_redis"; then show_error "Redis no está desplegado."; cleanup 1; fi
+        if ! docker service ls | grep -q "redis_redis"; then show_error "Redis no está desplegado."; cleanup 1; }
         if initialize_chatwoot_database; then show_success "Base de datos de Chatwoot inicializada."; else show_error "Error crítico al inicializar DB de Chatwoot."; cleanup 1; fi
         run_command "docker stack deploy -c \"$deploy_file\" $tool_name" "Desplegando $tool_name (Stack Final)..."
     else
@@ -406,11 +412,11 @@ install_docker_tool() {
 # ----------------------------------------------------
 main() {
     echo -e "\n${GREEN}=======================================================${NC}"
-    echo -e "${GREEN}  🚀 INSTALADOR DOCKER STANDALONE (V5.3 - MODO VERBOSE) 🚀  ${NC}"
-    echo -e "${GREEN}  🛡️  SEGURIDAD (Fail2Ban, UFW, RKHunter) AÑADIDA     ${NC}"
+    echo -e "${GREEN}  🚀 INSTALADOR DOCKER STANDALONE (V5.4 - LOGGING FIX) 🚀  ${NC}"
+    echo -e "${GREEN}  ✅ Reporting de estado de comandos corregido.        ${NC}"
     echo -e "${GREEN}=======================================================${NC}\n"
 
-    if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
+    if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; }
     mkdir -p $DOCKER_DIR; cd $DOCKER_DIR || { show_error "No se pudo acceder a $DOCKER_DIR"; cleanup 1; exit 1; }
 
     show_message "Configuración inicial"
@@ -435,7 +441,7 @@ EOL
 
     install_dependencies
     initialize_docker_swarm
-    install_server_tools # <--- NUEVO PASO DE SEGURIDAD
+    install_server_tools # Paso de seguridad
     create_docker_networks
 
     show_message "Instalando servicios en orden de dependencias..."
@@ -456,7 +462,7 @@ EOL
     for i in "${!SELECTED_TOOLS[@]}"; do
         tool_name="${SELECTED_TOOLS[$i]}"
         tool_index=-1
-        for j in "${!AVAILABLE_TOOLS[@]}"; do if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then tool_index=$j; break; fi; done
+        for j in "${!AVAILABLE_TOOLS[@]}"; do if [ "${AVAILABLE_TOOLS[$j]}" = "$tool_name" ]; then tool_index=$j; break; fi; }
         if [ $tool_index -ge 0 ]; then
             subdomain_file="$DOCKER_DIR/$tool_name/.subdomain"
             subdomain=""

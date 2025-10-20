@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 
 # =================================================================================
-# INSTALADOR DOCKER SWARM STANDALONE (V5.2 - MODO DETALLADO)
-# Este script es una versión completa que no requiere API y muestra todo el proceso.
+# INSTALADOR DOCKER SWARM STANDALONE (V5.3 - MODO DETALLADO CON SEGURIDAD)
+# Este script es una versión completa que no requiere API, muestra todo el proceso
+# e incluye la instalación de herramientas de seguridad básicas.
 # =================================================================================
 
 # --- Configuración del Script ---
-SCRIPT_VERSION="5.2.0-STANDALONE-SUPER-VERBOSE"
+SCRIPT_VERSION="5.3.0-STANDALONE-SECURITY"
 DOCKER_DIR="/home/docker"
 SCRIPT_PATH=$(readlink -f "$0")
 TEMP_FILES=()
@@ -198,6 +199,43 @@ install_dependencies() {
     fi
 }
 
+# Instala y configura herramientas básicas de seguridad
+install_security_tools() {
+    show_message "Instalando y configurando herramientas de seguridad..."
+
+    # --- UFW (Firewall) ---
+    run_command "apt-get install -y ufw" "Instalando UFW (Uncomplicated Firewall)..."
+    run_command "ufw allow 22/tcp" "Permitiendo conexiones SSH (puerto 22)..."
+    run_command "ufw allow 80/tcp" "Permitiendo tráfico HTTP (puerto 80)..."
+    run_command "ufw allow 443/tcp" "Permitiendo tráfico HTTPS (puerto 443)..."
+    show_warning "Docker Swarm requiere puertos específicos. Abriéndolos ahora..."
+    run_command "ufw allow 2377/tcp" "Permitiendo puerto 2377/tcp para gestión del clúster Swarm..."
+    run_command "ufw allow 7946/tcp" "Permitiendo puerto 7946/tcp para comunicación entre nodos..."
+    run_command "ufw allow 7946/udp" "Permitiendo puerto 7946/udp para descubrimiento de nodos..."
+    run_command "ufw allow 4789/udp" "Permitiendo puerto 4789/udp para la red overlay..."
+    run_command "echo 'y' | ufw enable" "Habilitando el firewall..."
+    run_command "ufw status" "Verificando el estado del firewall..."
+    show_success "UFW configurado y habilitado."
+
+    # --- Fail2Ban ---
+    run_command "apt-get install -y fail2ban" "Instalando Fail2Ban..."
+    JAIL_LOCAL="/etc/fail2ban/jail.local"
+    if [ ! -f "$JAIL_LOCAL" ]; then
+        show_message "Creando configuración local para Fail2Ban (jail.local)..."
+        echo -e "[sshd]\nenabled = true\nport = ssh\nlogpath = %(sshd_log)s\nbackend = %(sshd_backend)s" > "$JAIL_LOCAL"
+    fi
+    run_command "systemctl enable fail2ban && systemctl start fail2ban" "Habilitando e iniciando Fail2Ban..."
+    run_command "systemctl status fail2ban" "Verificando el estado de Fail2Ban..."
+    show_success "Fail2Ban instalado y configurado para proteger SSH."
+
+    # --- RKHunter (Rootkit Hunter) ---
+    run_command "apt-get install -y rkhunter" "Instalando RKHunter..."
+    run_command "rkhunter --propupd" "Actualizando la base de datos de propiedades de archivos de RKHunter..."
+    show_message "Realizando un escaneo inicial con RKHunter (esto puede tardar unos minutos)..."
+    run_command "rkhunter --check --sk" "Ejecutando el escaneo del sistema..."
+    show_success "RKHunter instalado y escaneo inicial completado. Revise los registros en /var/log/rkhunter.log"
+}
+
 # Inicializa el modo Docker Swarm si no está activo
 initialize_docker_swarm() {
     show_message "Verificando el estado de Docker Swarm..."
@@ -332,10 +370,10 @@ install_docker_tool() {
 
 # --- Lógica de Ejecución Principal ---
 main() {
-    echo -e "\n${GREEN}============================================================${NC}"
-    echo -e "${GREEN}  🚀 INSTALADOR DOCKER STANDALONE (V5.2 - MODO DETALLADO) 🚀  ${NC}"
-    echo -e "${GREEN}  👀 Este script mostrará todos los procesos y registros.     ${NC}"
-    echo -e "${GREEN}============================================================${NC}\n"
+    echo -e "\n${GREEN}========================================================================${NC}"
+    echo -e "${GREEN}  🚀 INSTALADOR DOCKER STANDALONE (V5.3 - MODO SEGURO Y DETALLADO) 🚀  ${NC}"
+    echo -e "${GREEN}  👀 Este script mostrará todos los procesos, registros y segurizará el servidor.     ${NC}"
+    echo -e "${GREEN}========================================================================${NC}\n"
 
     # 1. Verificar privilegios de root
     if [ "$EUID" -ne 0 ]; then show_error "Este script debe ejecutarse como root."; exit 1; fi
@@ -361,6 +399,7 @@ main() {
 
     # 4. Configurar el entorno
     install_dependencies
+    install_security_tools
     initialize_docker_swarm
     create_docker_networks
 

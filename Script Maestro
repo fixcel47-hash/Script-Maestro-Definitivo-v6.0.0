@@ -1,103 +1,131 @@
 #!/bin/bash
 
 # ==============================================================================
-# Script para la Instalación y Configuración de Herramientas Básicas de Seguridad
-# ==============================================================================
-#
-# Este script instalará y configurará:
-#   - Fail2Ban: Para protección contra ataques de fuerza bruta.
-#   - RKHunter: Para la detección de rootkits y backdoors.
-#   - CHKRootkit: Un escáner de rootkits complementario.
-#   - UFW (Uncomplicated Firewall): Para gestionar las reglas del firewall.
-#
-# Se recomienda ejecutar este script en un sistema recién instalado.
-#
+# Script de Instalación de Herramientas de Seguridad
+# Clonado directamente de la lógica de installer.sh
 # ==============================================================================
 
-# --- Colores para los mensajes ---
+# --- Colores para mensajes (idénticos al script original) ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # Sin color
+NC='\033[0m' # No Color
 
-# --- Funciones para mostrar mensajes ---
+# --- Funciones para mostrar mensajes (idénticas al script original) ---
 show_message() {
     echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-show_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
 show_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# --- Función Principal ---
-main() {
-    # 1. Verificar si el script se ejecuta como root
-    if [ "$EUID" -ne 0 ]; then
-        show_error "Este script debe ejecutarse como root. Por favor, utiliza 'sudo'."
-        exit 1
-    fi
+show_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
 
-    show_message "Iniciando la instalación de herramientas de seguridad..."
+# --- Función para animación de espera (idéntica al script original) ---
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
     
-    # 2. Actualizar la lista de paquetes del sistema
-    show_message "Actualizando la lista de paquetes (apt-get update)..."
-    if ! apt-get update -y > /dev/null 2>&1; then
-        show_error "Falló la actualización de la lista de paquetes. Verifica tu conexión a internet."
-        exit 1
-    fi
-    show_success "Lista de paquetes actualizada."
+    echo -n "Procesando "
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+    echo -e "${GREEN}[COMPLETADO]${NC}"
+}
 
-    # --- Instalación de Fail2Ban ---
-    show_message "Instalando y configurando Fail2Ban..."
+# --- Función para ejecutar comandos (idéntica al script original) ---
+run_command() {
+    local cmd=$1
+    local msg=$2
+    
+    show_message "$msg"
+    eval "$cmd" > /dev/null 2>&1 &
+    local cmd_pid=$!
+    spinner $cmd_pid
+    wait $cmd_pid
+    local exit_status=$?
+    
+    if [ $exit_status -ne 0 ]; then
+        show_error "Comando falló: $cmd"
+        exit $exit_status
+    fi
+    
+    return $exit_status
+}
+
+# --- Función para configurar rkhunter (idéntica al script original) ---
+configure_rkhunter() {
+    local config_file="/etc/rkhunter.conf"
+
+    show_message "Configurando RKHunter..."
+
+    run_command "sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' \"$config_file\" && \
+                sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' \"$config_file\" && \
+                sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' \"$config_file\"" \
+                "Aplicando configuración de RKHunter..."
+}
+
+# --- Función de instalación de herramientas (idéntica al script original) ---
+install_server_tools() {
+    show_message "Instalando herramientas de seguridad en el servidor..."
+    
+    # Fail2Ban
+    show_message "Instalando Fail2Ban..."
     apt-get install -y fail2ban
     systemctl enable fail2ban
     systemctl start fail2ban
-    show_success "Fail2Ban instalado y activado."
-
-    # --- Instalación de RKHunter ---
-    show_message "Instalando y configurando RKHunter..."
-    # Pre-configurar debconf para evitar la pregunta de configuración de Postfix
+    
+    # RKHunter
+    show_message "Instalando RKHunter..."
     echo "postfix postfix/main_mailer_type select No configuration" | debconf-set-selections
     apt-get install -y rkhunter
+    configure_rkhunter  # Llama a la función de configuración después de instalar
+    rkhunter --update
+    rkhunter --propupd
     
-    # Aplicar configuración a RKHunter
-    local rkhunter_conf="/etc/rkhunter.conf"
-    sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' "$rkhunter_conf"
-    sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' "$rkhunter_conf"
-    sed -i 's|^WEB_CMD=.*|WEB_CMD=\"\"|' "$rkhunter_conf"
-    
-    # Actualizar la base de datos de RKHunter
-    rkhunter --update > /dev/null 2>&1
-    rkhunter --propupd > /dev/null 2>&1
-    show_success "RKHunter instalado y actualizado."
-    
-    # --- Instalación de CHKRootkit ---
+    # CHKRootkit
     show_message "Instalando CHKRootkit..."
     apt-get install -y chkrootkit
-    show_success "CHKRootkit instalado."
     
-    # --- Configuración de UFW (Firewall) ---
-    show_message "Configurando el firewall UFW..."
+    # UFW
+    show_message "Configurando UFW Firewall..."
     apt-get install -y ufw
-    ufw allow ssh   # Permitir conexiones SSH
-    ufw allow http  # Permitir tráfico web HTTP
-    ufw allow https # Permitir tráfico web HTTPS
-    
-    # Activar el firewall sin pedir confirmación
+    ufw allow ssh
+    ufw allow http
+    ufw allow https
     echo "y" | ufw enable
-    show_success "Firewall UFW configurado y activado."
     
-    echo ""
-    show_success "¡Configuración de seguridad completada!"
-    echo "Resumen de lo realizado:"
-    echo "  - Fail2Ban está activo para proteger contra fuerza bruta."
-    echo "  - RKHunter y CHKRootkit están instalados para auditorías de seguridad."
-    echo "  - El Firewall (UFW) está activado y permite tráfico SSH, HTTP y HTTPS."
+    show_success "Herramientas de seguridad instaladas correctamente"
 }
 
-# --- Ejecutar la función principal ---
+# --- Función principal para ejecutar el proceso ---
+main() {
+    # Verificar si el script se ejecuta como root
+    if [ "$EUID" -ne 0 ]; then
+        show_error "Este script debe ejecutarse como root"
+        exit 1
+    fi
+    
+    # Actualizar repositorios antes de instalar
+    show_message "Actualizando repositorios del sistema..."
+    apt-get update -y
+    
+    # Llamar a la función principal de instalación de herramientas
+    install_server_tools
+    
+    echo ""
+    show_success "Proceso completado."
+}
+
+# Ejecutar la función principal
 main

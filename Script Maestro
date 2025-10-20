@@ -12,7 +12,7 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# --- Funciones de utilidad (con spinner) ---
+# --- Funciones de utilidad (con spinner corregido) ---
 show_message() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -25,15 +25,15 @@ show_success() {
     echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
+# --- Función para animación de espera (CORREGIDA) ---
 spinner() {
     local pid=$1
     local delay=0.1
     local spinstr='|/-\'
     
-    echo -n "Procesando 
-"
-    while [ "$(ps a | awk '{print $1}' | grep $pid)" ];
-do
+    # Se corrige la sintaxis de 'while' para evitar el error 'syntax error near unexpected token `do''
+    echo -n "Procesando "
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do 
         local temp=${spinstr#?}
         printf " [%c]  " "$spinstr"
         local spinstr=$temp${spinstr%"$temp"}
@@ -137,7 +137,7 @@ main_maestro
 
 # =================================================================================
 # INSTALADOR DOCKER SWARM STANDALONE (V5.2 - MUESTRA TODO / CERO SPINNERS)
-# (Parte 2 del script combinado, con corrección de sintaxis)
+# (Parte 2 del script combinado, con correcciones de sintaxis aplicadas)
 # =================================================================================
 
 SCRIPT_VERSION="5.2.0-STANDALONE-SUPER-VERBOSE"
@@ -264,7 +264,7 @@ else
 trap 'cleanup 1 false' SIGHUP SIGINT SIGQUIT SIGTERM
 trap 'cleanup 1 false' ERR
 
-# FUNCIÓN run_command (Modificada para Verbose, CERO SPINNER y CORREGIDA)
+# FUNCIÓN run_command (Modificada para Verbose, CERO SPINNER y con corrección para el comentario)
 run_command() {
     local cmd=$1
     local msg=$2
@@ -580,8 +580,6 @@ main() {
     echo -e "${GREEN}  👀 Muestra TODO el proceso de ejecución y logs.     ${NC}"
     echo -e "${GREEN}=======================================================${NC}\n"
 
-    # Verificar si el script ya se ejecutó como root en la Parte 1.
-    # Si esta parte se ejecuta sola, se debe verificar.
     if [ "$EUID" -ne 0 ];
 then show_error "Este script debe ejecutarse como root."; cleanup 1; exit 1; fi
     mkdir -p $DOCKER_DIR;

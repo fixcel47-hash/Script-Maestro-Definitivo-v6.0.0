@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.1"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -10,11 +10,12 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Variables API (SE MANTIENEN PARA REGISTRO DE ESTADO, PERO NO PARA DESCARGA DE STACKS)
+# Si no desea utilizar la funcionalidad de registro de estado, puede ignorar el token.
 API_URL="https://tkinstall.emodev.link/api"
 API_TOKEN=""
 INSTALLATION_ID=""
 
-# MAPA DE ENLACES DE DESCARGA DE GITHUB
+# MAPA DE ENLACES DE DESCARGA DE GITHUB (MODIFICADO)
 declare -rA GITHUB_LINKS=(
     ["evoapi"]="https://github.com/user-attachments/files/22956481/evoapi-stack.yml"
     ["n8n"]="https://github.com/user-attachments/files/22956487/n8n-stack.yml"
@@ -56,11 +57,9 @@ cleanup() {
         
         # Eliminar archivos temporales en caso de error
         if [ ${#TEMP_FILES[@]} -gt 0 ]; then
-          #  echo -e "${BLUE}[INFO]${NC} Eliminando ${#TEMP_FILES[@]} archivos temporales..."
             for file in "${TEMP_FILES[@]}"; do
                 if [ -f "$file" ]; then
                     rm -f "$file"
-           #         echo -e "${BLUE}[INFO]${NC} Eliminado: $file"
                 fi
             done
         fi
@@ -68,19 +67,16 @@ cleanup() {
     
     # Si se solicita, eliminar solo los archivos stack.yml (en caso de éxito)
     if [ "$delete_stacks" = true ]; then
-      #  echo -e "${BLUE}[INFO]${NC} Eliminando archivos de plantilla stack.yml..."
         for tool_name in "${SELECTED_TOOLS[@]}"; do
             local stack_file="$DOCKER_DIR/$tool_name/$tool_name-stack.yml"
             if [ -f "$stack_file" ]; then
                 rm -f "$stack_file"
-       #         echo -e "${BLUE}[INFO]${NC} Eliminado: $stack_file"
             fi
         done
     fi
     
     # Crear un script de autodestrucción (tanto para error como para éxito)
     if [ $exit_code -ne 0 ] || [ "$delete_stacks" = true ]; then
-     #   echo -e "${BLUE}[INFO]${NC} Eliminando script actual: $SCRIPT_PATH"
         
         # Crear un script separado para la autodestrucción
         local self_destruct_script="/tmp/self_destruct_$$_$(date +%s).sh"
@@ -106,7 +102,6 @@ EOF
         # desconectado de la terminal actual para que continúe después de salir
         nohup "$self_destruct_script" >/dev/null 2>&1 &
         
-       # echo -e "${BLUE}[INFO]${NC} Script de autodestrucción iniciado"
     fi
     
     echo -e "${BLUE}[INFO]${NC} Limpieza completada"
@@ -127,7 +122,6 @@ trap 'cleanup 1 false; exit 1' ERR
 register_temp_file() {
     local file_path=$1
     TEMP_FILES+=("$file_path")
-    show_message "Registrado archivo temporal: $file_path"
 }
 
 # Procesar parámetros de línea de comandos
@@ -147,9 +141,9 @@ done
 # Función para recopilar información del sistema
 collect_system_info() {
     HOSTNAME=$(hostname)
-    OS_INFO=$(cat /etc/os-release | grep "PRETTY_NAME" | cut -d '"' -f 2)
-    CPU_INFO=$(grep "model name" /proc/cpuinfo | head -n 1 | cut -d ':' -f 2 | sed 's/^ //')
-    MEM_TOTAL=$(free -h | grep "Mem:" | awk '{print $2}')
+    OS_INFO=$(cat /etc/os-release 2>/dev/null | grep "PRETTY_NAME" | cut -d '"' -f 2 || echo "Unknown OS")
+    CPU_INFO=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -n 1 | cut -d ':' -f 2 | sed 's/^ //')
+    MEM_TOTAL=$(free -h 2>/dev/null | grep "Mem:" | awk '{print $2}')
     IP_ADDRESS=$(curl -s https://api.ipify.org)
 }
 
@@ -353,7 +347,7 @@ download_from_api() {
         show_error "Error: Enlace de GitHub no encontrado para la herramienta: $tool_name"
         cleanup 1
         exit 1
-    fi
+    }
     
     show_message "Descargando stack de $tool_name desde GitHub: $github_url"
 
@@ -372,7 +366,6 @@ download_from_api() {
         return 0
     else
         show_error "Error al guardar el archivo $local_path"
-        # Esto debería ser cubierto por la comprobación de wget, pero se mantiene para redundancia
         cleanup 1
         exit 1
     fi
@@ -456,9 +449,6 @@ COMMON_PASSWORD=$COMMON_PASSWORD
 BASE_DOMAIN=$BASE_DOMAIN
 SECRET_KEY=$SECRET_KEY
 EOL
-
-# Registrar archivo como temporal
-# register_temp_file "$env_global_file"
 
 # Verificar e instalar dependencias
 install_dependencies() {
@@ -643,7 +633,7 @@ initialize_chatwoot_database() {
     local attempt=0
 
     # Obtener el ID del contenedor del servicio Redis
-    container_id=$(docker ps --filter "name=redis-server" --format "{{.ID}}")
+    container_id=$(docker ps --filter "name=redis_redis-server" --format "{{.ID}}")
 
     while [ $attempt -lt $max_attempts ] && [ "$redis_ready" = false ]; do
         if [ -n "$container_id" ]; then
@@ -662,7 +652,7 @@ initialize_chatwoot_database() {
             sleep 5
             attempt=$((attempt + 1))
             # Intentamos obtener el container_id nuevamente
-            container_id=$(docker ps --filter "name=redis-server" --format "{{.ID}}")
+            container_id=$(docker ps --filter "name=redis_redis-server" --format "{{.ID}}")
         fi
     done
 
@@ -874,11 +864,10 @@ install_docker_tool() {
     echo "$SUBDOMAIN" > "$subdomain_file"
     register_temp_file "$subdomain_file"
     
-    # Descargar archivos de configuración desde la API (AHORA DE GITHUB)
+    # Descargar archivos de configuración desde GITHUB
     show_message "Descargando archivos de configuración para $tool_name..."
     stack_file="$tool_dir/$tool_name-stack.yml"
     
-    # LLAMADA A LA FUNCIÓN MODIFICADA
     download_from_api "$tool_name" "$stack_file"
     
     # Crear archivo temporal para reemplazar variables
@@ -950,18 +939,15 @@ main() {
 
     # Si no se pasó un token, solicitarlo
     if [ -z "$API_TOKEN" ]; then
-        read -p "Ingrese su token de instalación: " API_TOKEN
-        if [ -z "$API_TOKEN" ]; then
-            show_error "El token no puede estar vacío. Saliendo."
-            cleanup 1
-            exit 1
-        fi
+        read -p "Ingrese su token de instalación (opcional, deje vacío para saltar la validación): " API_TOKEN
         
-        # Validar el token solo si no se pasó como parámetro
-        if ! validate_token; then
-            show_error "No se puede continuar con la instalación. Token inválido."
-            cleanup 1
-            exit 1
+        # Si el usuario proporciona un token, intentamos validarlo
+        if [ ! -z "$API_TOKEN" ]; then
+            if ! validate_token; then
+                show_error "No se puede continuar con la instalación. Token inválido."
+                cleanup 1
+                exit 1
+            fi
         fi
     fi
 
@@ -994,8 +980,6 @@ main() {
     update_installation_status "in_progress" "$current_components"
 
     # Instalar herramientas Docker seleccionadas en orden específico
-    # Primero instalar servicios de infraestructura (Traefik, Redis, PostgreSQL)
-    # Luego las aplicaciones que dependen de ellos
     show_message "Instalando servicios en orden de dependencias..."
     
     # Orden de instalación: infraestructura primero, aplicaciones después
@@ -1044,7 +1028,7 @@ main() {
                 tool_index=$j
                 break
             fi
-        end
+        done
 
         if [ $tool_index -ge 0 ]; then
             # Leer el subdominio personalizado del archivo guardado
@@ -1062,7 +1046,7 @@ main() {
 
             echo "- ${tool_name^}: https://$subdomain.$BASE_DOMAIN"
         fi
-    done
+    done # <--- ¡ESTE 'done' FALTABA Y CAUSABA EL ERROR!
     
     echo ""
     echo "Información de credenciales:"

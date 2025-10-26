@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="1.2.1"
+SCRIPT_VERSION="1.2.2"
 
 # Colores para mensajes
 RED='\033[0;31m'
@@ -335,7 +335,7 @@ configure_rkhunter() {
                 "Aplicando configuración de RKHunter..."
 }
 
-# --- FUNCIÓN MODIFICADA PARA DESCARGAR DE GITHUB ---
+# --- FUNCIÓN CORREGIDA PARA DESCARGAR DE GITHUB ---
 download_from_api() {
     local tool_name=$1
     local local_path=$2
@@ -347,7 +347,7 @@ download_from_api() {
         show_error "Error: Enlace de GitHub no encontrado para la herramienta: $tool_name"
         cleanup 1
         exit 1
-    }
+    fi  # <--- CORRECCIÓN: Usar 'fi' para cerrar el 'if'
     
     show_message "Descargando stack de $tool_name desde GitHub: $github_url"
 
@@ -1046,7 +1046,7 @@ main() {
 
             echo "- ${tool_name^}: https://$subdomain.$BASE_DOMAIN"
         fi
-    done # <--- ¡ESTE 'done' FALTABA Y CAUSABA EL ERROR!
+    done
     
     echo ""
     echo "Información de credenciales:"
